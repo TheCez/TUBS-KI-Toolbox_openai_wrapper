@@ -1,7 +1,7 @@
 from openai import OpenAI
 import json
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="86653868c86740a8a1141512a74abd7e")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="<ADD_YOUR_API_KEY_HERE>")
 
 print("--- Testing JSON Mode & Structured Outputs ---")
 

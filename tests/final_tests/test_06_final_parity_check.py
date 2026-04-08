@@ -1,6 +1,6 @@
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="fake-key")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="<ADD_YOUR_API_KEY_HERE>")
 
 print("--- Testing Developer Role & Reasoning Mapping ---")
 

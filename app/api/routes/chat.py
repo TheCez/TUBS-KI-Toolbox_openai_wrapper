@@ -47,9 +47,15 @@ async def chat_completions(
     if body.tools:
         tools_str = json.dumps(body.tools)
         xml_rule = (
-            "You have access to tools. If you need to use a tool, DO NOT write conversational text. Instead, output an XML block. If you need to trigger multiple tools simultaneously, you MUST wrap them in a <tool_calls> root element and output all of them back-to-back before stopping. Use this EXACT format:\n"
-            "<tool_calls><tool_call><name>function_name</name><arguments>{\"actual_key\": \"actual_value\"}</arguments></tool_call></tool_calls>\n"
+            "You have access to the tools provided in the current request. To use any tool, you MUST follow this XML format. If you need to trigger multiple tools simultaneously, you MUST wrap them in a <tool_calls> root element and output all of them back-to-back before stopping. Use this EXACT format:\n"
+            "<tool_calls><tool_call><name>tool_name</name><arguments>{\"actual_key\": \"actual_value\"}</arguments></tool_call></tool_calls>\n"
             "The <arguments> MUST contain raw, valid JSON that perfectly matches the provided tool schema. DO NOT wrap the arguments inside a {\"json\": ...} parent object.\n"
+            "CRITICAL RULES:\n"
+            "1. CRITICAL: When outputting XML tags like <tool_call>, <name>, or </arguments>, you MUST NOT escape the forward slash. Output raw, plain XML tags only.\n"
+            "2. When creating a new file, DO NOT use apply_patch if possible. Use bash with a heredoc (e.g., cat << \"EOF\" > file.ext) or write_file if available. Only use apply_patch for modifying existing code blocks or no other valid tool is available.\n"
+            "3. Ensure the JSON inside <arguments> is valid, single-line or properly escaped, and contains no trailing commas or unescaped characters that could break a json.loads() call. Be extremely precise with newlines and special characters.\n"
+            "4. Avoid generating massive files in a single tool call if they contain complex nested structures. If a file is over 100 lines, consider writing it in logical stages if the client tools support it.\n"
+            "5. Your output must contain ONLY the XML blocks. No conversational filler like \"Here is your code\" before or after the <tool_calls> tag, as this can confuse the client parser.\n"
             f"Available tools: {tools_str}\n"
         )
         custom_instructions += xml_rule
@@ -147,20 +153,21 @@ async def chat_completions(
                         else:
                             is_xml_done = False
                             if "<tool_calls>" in text_buffer:
-                                if "</tool_calls>" in text_buffer:
+                                if re.search(r'<\\?/tool_calls>', text_buffer):
                                     is_xml_done = True
                             else:
-                                if "</tool_call>" in text_buffer:
+                                if re.search(r'<\\?/tool_call>', text_buffer):
                                     is_xml_done = True
                                     
                             if is_xml_done:
                                 try:
-                                    matches = list(re.finditer(r'<tool_call>\s*<name>(.*?)</name>\s*<arguments>(.*?)</arguments>\s*</tool_call>', text_buffer, re.DOTALL))
+                                    matches = list(re.finditer(r'<tool_call>\s*<name>(.*?)<\\?/name>\s*<arguments>(.*?)<\\?/arguments>\s*<\\?/tool_call>', text_buffer, re.DOTALL))
                                     if matches:
                                         tool_calls_payload = []
                                         for idx, match in enumerate(matches):
                                             name = match.group(1).strip() if match.group(1) else ""
                                             arguments = match.group(2).strip() if match.group(2) else ""
+                                            arguments = arguments.replace('\\/', '/')
                                             tool_calls_payload.append({
                                                 "index": idx,
                                                 "id": f"call_{uuid.uuid4().hex}",
@@ -296,12 +303,13 @@ async def chat_completions(
 
         # Check for tool_call XML
         if "<tool_call>" in response_text or "<tool_calls>" in response_text:
-            matches = list(re.finditer(r'<tool_call>\s*<name>(.*?)</name>\s*<arguments>(.*?)</arguments>\s*</tool_call>', response_text, re.DOTALL))
+            matches = list(re.finditer(r'<tool_call>\s*<name>(.*?)<\\?/name>\s*<arguments>(.*?)<\\?/arguments>\s*<\\?/tool_call>', response_text, re.DOTALL))
             if matches:
                 tool_calls = []
                 for match in matches:
                     name = match.group(1).strip()
                     arguments = match.group(2).strip()
+                    arguments = arguments.replace('\\/', '/')
                     tool_calls.append(
                         ToolCall(
                             id=f"call_{uuid.uuid4().hex}",
@@ -311,8 +319,8 @@ async def chat_completions(
                     )
                 
                 # Remove the XML from response_text
-                response_text = re.sub(r'<tool_call>.*?</tool_call>', '', response_text, flags=re.DOTALL)
-                response_text = response_text.replace('<tool_calls>', '').replace('</tool_calls>', '').strip()
+                response_text = re.sub(r'<tool_call>.*?<\\?/tool_call>', '', response_text, flags=re.DOTALL)
+                response_text = re.sub(r'<\\?/tool_calls>', '', response_text).replace('<tool_calls>', '').strip()
                 
                 finish_reason = "tool_calls"
         

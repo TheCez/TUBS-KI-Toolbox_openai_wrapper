@@ -2,7 +2,7 @@ from openai import OpenAI
 
 # 1. Initialize the official OpenAI client
 client = OpenAI(
-    api_key="86653868c86740a8a1141512a74abd7e", # Ignored by your wrapper
+    api_key="<ADD_YOUR_API_KEY_HERE>", # Ignored by your wrapper
     base_url="http://localhost:8000/v1" # This is the magic! Point it to your local server
 )
 
