@@ -1,0 +1,11 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # We rely heavily on passing the token from the client, but this acts as an optional fallback
+      - DEFAULT_API_KEY=${DEFAULT_API_KEY:-}
+      - ENABLE_STOP_TRUNCATION=True
+    volumes:
+      - ./app:/app/app

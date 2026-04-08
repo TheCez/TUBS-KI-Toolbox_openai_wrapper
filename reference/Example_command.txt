@@ -1,0 +1,12 @@
+curl -X 'POST' \
+  'https://ki-toolbox.tu-braunschweig.de/api/v1/chat/send' \
+  -H 'accept: application/json' \
+  -H 'Authorization: Bearer <Token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "thread": null,
+  "prompt": "<Prompt>",
+  "model": "<Model>",
+  "customInstructions": "<Benutzerdefinierte Anweisungen>",
+  "hideCustomInstructions": <true oder false>,
+}'
