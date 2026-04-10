@@ -37,7 +37,8 @@ from openai import OpenAI
 # Initialize the official OpenAI client pointing to the local gateway
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    # Replace with your actual KI-Toolbox Bearer token
+    # To get your TUBS KI-Toolbox API key (Bearer token), navigate to:
+    # https://ki-toolbox.tu-braunschweig.de/authenticationToken/show
     api_key="your_tubs_bearer_token_here" 
 )
 
