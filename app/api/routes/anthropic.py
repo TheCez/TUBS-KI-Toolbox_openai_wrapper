@@ -6,7 +6,7 @@ Translates Anthropic requests into TU-BS KI-Toolbox API format.
 import os
 import json
 import uuid
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -26,19 +26,28 @@ from app.services.prompt import (
 )
 
 router = APIRouter()
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 STOP_TRUNCATION_ENABLED = os.getenv("ENABLE_STOP_TRUNCATION", "false").lower() == "true"
+
+
+async def get_anthropic_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    x_api_key: str | None = Header(default=None),
+) -> str:
+    if credentials:
+        return credentials.credentials
+    if x_api_key:
+        return x_api_key
+    raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 @router.post("/messages", response_model=MessageResponse)
 async def anthropic_messages(
     request: Request,
     body: MessageRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    token: str = Depends(get_anthropic_token),
 ):
-    token = credentials.credentials
-
     # Compile prompt from Anthropic messages
     prompt_string = compile_anthropic_messages_to_prompt(body.messages)
 
@@ -89,6 +98,7 @@ async def anthropic_messages(
             is_buffering_tool = False
             has_yielded_tool = False
             content_block_idx = 0
+            text_block_open = True
 
             def _event(event_type: str, data: dict) -> str:
                 return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -121,6 +131,17 @@ async def anthropic_messages(
                             is_buffering_tool = True
 
                         if not is_buffering_tool:
+                            if not text_block_open:
+                                if not text_buffer.strip():
+                                    text_buffer = ""
+                                    continue
+
+                                yield _event("content_block_start", {
+                                    "type": "content_block_start", "index": content_block_idx,
+                                    "content_block": {"type": "text", "text": ""},
+                                })
+                                text_block_open = True
+
                             # Stop sequence check
                             if STOP_TRUNCATION_ENABLED and body.stop_sequences:
                                 truncated, was_hit = truncate_at_stop(text_buffer, body.stop_sequences)
@@ -154,6 +175,7 @@ async def anthropic_messages(
                             if parsed:
                                 # Close text block
                                 yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                text_block_open = False
                                 content_block_idx += 1
 
                                 for tc in parsed:
@@ -180,7 +202,7 @@ async def anthropic_messages(
                             is_buffering_tool = False
 
                     elif chunk_type == "done":
-                        if not has_yielded_tool:
+                        if text_block_open:
                             yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
 
                         yield _event("message_delta", {

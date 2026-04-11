@@ -1,7 +1,8 @@
 import traceback
+import os
 from anthropic import Anthropic
 
-client = Anthropic(base_url="http://localhost:8000/v1", api_key="<ADD_YOUR_API_KEY_HERE>")
+client = Anthropic(base_url="http://localhost:8000", api_key=os.environ["TUBS_API_KEY"])
 
 print("--- Testing Anthropic SSE Streaming ---")
 

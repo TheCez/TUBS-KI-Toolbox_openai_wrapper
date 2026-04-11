@@ -16,5 +16,4 @@ async def test_chat_completions_missing_auth():
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "Hello"}]
         })
-    assert response.status_code == 403
-
+    assert response.status_code == 401

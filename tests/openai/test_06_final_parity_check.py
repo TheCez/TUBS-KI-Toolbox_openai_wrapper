@@ -1,6 +1,7 @@
 from openai import OpenAI
+import os
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="<ADD_YOUR_API_KEY_HERE>")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key=os.environ["TUBS_API_KEY"])
 
 print("--- Testing Developer Role & Reasoning Mapping ---")
 
@@ -14,4 +15,5 @@ response = client.chat.completions.create(
 )
 
 # Check if the developer role was accepted without error
-print("\
+print("\n[Response]:\n", response.choices[0].message.content)
+print(f"\n[Finish Reason]: {response.choices[0].finish_reason}")

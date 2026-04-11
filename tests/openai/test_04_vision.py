@@ -1,6 +1,7 @@
 from openai import OpenAI
+import os
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="<ADD_YOUR_API_KEY_HERE>")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key=os.environ["TUBS_API_KEY"])
 
 print("--- Testing Multimodal Vision ---")
 

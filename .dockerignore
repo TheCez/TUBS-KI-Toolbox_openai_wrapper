@@ -7,7 +7,8 @@ __pycache__/
 .env
 reference/
 tests/
-*.md
+AGENTS.md
+FEATURE_SUPPORT.md
 LICENSE
 desktop.ini
 docker-compose.yml
