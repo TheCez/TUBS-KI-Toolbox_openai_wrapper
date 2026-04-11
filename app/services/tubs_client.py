@@ -1,11 +1,13 @@
 import httpx
 import json
+import os
 from typing import AsyncGenerator
 from fastapi import HTTPException
 from app.models.tubs import is_local_model
 
-TUBS_CLOUD_URL = "https://ki-toolbox.tu-braunschweig.de/api/v1/chat/send"
-TUBS_LOCAL_URL = "https://ki-toolbox.tu-braunschweig.de/api/v1/localChat/send"
+_BASE = os.getenv("TUBS_BASE_URL", "https://ki-toolbox.tu-braunschweig.de")
+TUBS_CLOUD_URL = f"{_BASE}/api/v1/chat/send"
+TUBS_LOCAL_URL = f"{_BASE}/api/v1/localChat/send"
 
 async def _non_stream_response(client: httpx.AsyncClient, url: str, headers: dict, req_kwargs: dict):
     try:

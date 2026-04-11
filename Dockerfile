@@ -10,8 +10,8 @@ WORKDIR /app
 # Copy dependency files
 COPY pyproject.toml ./
 
-# Install dependencies using uv into the system environment
-RUN uv pip install --system "fastapi>=0.111.0" "uvicorn>=0.30.1" "pydantic>=2.7.4" "httpx>=0.27.0" "python-multipart>=0.0.9" "python-dotenv>=1.0.1"
+# Install dependencies from pyproject.toml using uv
+RUN uv pip install --system .
 
 # Copy application code
 COPY ./app ./app

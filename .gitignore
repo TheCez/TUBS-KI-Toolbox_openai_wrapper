@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Windows
+desktop.ini
+Thumbs.db
+ehthumbs.db
+
+# OS
+.DS_Store
+
+# UV / pip
+uv.lock

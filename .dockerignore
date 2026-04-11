@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.vscode/
+.idea/
+.env
+reference/
+tests/
+*.md
+LICENSE
+desktop.ini
+docker-compose.yml
