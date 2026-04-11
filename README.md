@@ -7,9 +7,11 @@ With this wrapper, any client, agentic framework, or application that expects an
 ## Features
 
 - **Drop-in OpenAI Replacement:** Fully compliant with standard `/v1/chat/completions` requests.
+- **Anthropic Compatibility:** Parallel support for Anthropic `/v1/messages` enabling tools like Claude Code or Langchain to use TU-BS.
+- **Model Discovery:** Supports `/v1/models` so standard agents can dynamically query available cloud/local nodes, and perfectly routes Anthropic identifiers via an environment variable mapping (`ANTHROPIC_MODEL_MAP`).
 - **Bi-modal Routing:** Automatically routes to external endpoints or on-premise institute endpoints depending on the requested model.
-- **Streaming Support:** Real-time generation chunked perfectly into Server-Sent Events (SSE).
-- **Vision Support:** Complete support for base64 encoded multipart image messages in OpenAI format.
+- **Streaming Support:** Real-time generation chunked perfectly into Server-Sent Events (SSE) or Anthropic Message events.
+- **Vision Support:** Complete support for base64 encoded multipart image messages in OpenAI and Anthropic format.
 - **Extensive Parity:** Context mapping and proper formatting for standard clients.
 
 ## Getting Started
@@ -77,6 +79,16 @@ The wrapper automatically determines routing (Cloud vs On-Premise) based on the 
 | `gpt-4-turbo` |
 | `gpt-4` |
 | `gpt-3.5-turbo-0125` |
+
+### Anthropic Mapping
+
+If you are using Anthropic SDKs (which default ask for `claude-3-opus-20240229` or `claude-3-5-sonnet-latest`), the API wrapper will automatically translate these. By default, it maps Opus to `gpt-5.4`, Sonnet to `gpt-4o` or `o3`, and Haiku to `gpt-4o-mini` or `o4-mini`. 
+You can overwrite these defaults precisely in your `docker-compose.yml` via the environment variable `ANTHROPIC_MODEL_MAP`:
+```yaml
+environment:
+  - ANTHROPIC_MODEL_MAP={"claude-3-opus-20240229": "gpt-5.4", "claude-3-5-sonnet-20241022": "gpt-4o"}
+```
+You can query `GET /v1/models` natively to see the active merged mapping target list!
 
 ### Local Models (On-Premise Institute Run)
 

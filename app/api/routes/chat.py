@@ -10,6 +10,7 @@ from app.models.openai import ChatCompletionRequest, ChatCompletionResponse, Cho
 from app.models.tubs import TubsChatRequest
 from app.services.translation import compile_messages_to_prompt, get_images_from_messages
 from app.services.tubs_client import async_send_tubs_request
+from app.api.routes.models import get_anthropic_model_map
 
 router = APIRouter()
 security = HTTPBearer()
@@ -62,11 +63,15 @@ async def chat_completions(
 
     custom_instructions = custom_instructions.strip() if custom_instructions else None
 
+    # Map target model
+    anthropic_map = get_anthropic_model_map()
+    tubs_target_model = anthropic_map.get(body.model, body.model)
+
     # Build Tubs request payload
     tubs_payload = TubsChatRequest(
         thread=None,
         prompt=prompt_string,
-        model=body.model,
+        model=tubs_target_model,
         customInstructions=custom_instructions,
     ).model_dump(exclude_none=True)
 

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from fastapi.exceptions import RequestValidationError
 from app.api.errors import global_exception_handler, http_exception_handler, validation_exception_handler
-from app.api.routes import chat
+from app.api.routes import chat, anthropic, models
 
 app = FastAPI(title="TU BS KI-Toolbox API Wrapper", version="0.1.0")
 
@@ -20,6 +20,8 @@ app.add_exception_handler(httpx.HTTPStatusError, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 app.include_router(chat.router, prefix="/v1")
+app.include_router(anthropic.router, prefix="/v1")
+app.include_router(models.router, prefix="/v1")
 
 @app.get("/health")
 def health_check():

@@ -5,7 +5,9 @@ services:
       - "8000:8000"
     environment:
       # We rely heavily on passing the token from the client, but this acts as an optional fallback
-      - DEFAULT_API_KEY=${DEFAULT_API_KEY:-}
-      - ENABLE_STOP_TRUNCATION=True
+      - TUBS_BASE_URL=${TUBS_BASE_URL:-https://134.169.21.36}
+      - ENABLE_STOP_TRUNCATION=${ENABLE_STOP_TRUNCATION:-true}
+      # Optional: Override default Anthropic model mappings
+      # - ANTHROPIC_MODEL_MAP={"claude-3-5-sonnet-20241022": "gpt-4o", "claude-3-opus-20240229": "gpt-5.4"}
     volumes:
       - ./app:/app/app
