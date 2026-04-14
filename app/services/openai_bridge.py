@@ -8,9 +8,11 @@ from app.models.openai import Message, ToolCall, ToolCallFunction
 from app.models.responses import (
     ResponseCreateRequest,
     ResponseFunctionCallOutput,
+    ResponseFunctionToolChoice,
     ResponseInputImage,
     ResponseInputMessage,
     ResponseInputText,
+    ResponseReasoningConfig,
 )
 from app.models.tubs import TubsChatRequest
 from app.services.model_map import resolve_model
@@ -19,7 +21,6 @@ from app.services.prompt import (
     extract_reasoning,
     has_tool_xml_start,
     parse_tool_calls_xml,
-    strip_tool_xml,
 )
 from app.services.translation import compile_messages_to_prompt, get_images_from_messages
 
@@ -72,6 +73,9 @@ def build_custom_instructions(
     response_format: Optional[dict[str, Any]] = None,
     tools: Optional[Iterable[Any]] = None,
     instructions: Optional[str] = None,
+    reasoning: Optional[ResponseReasoningConfig] = None,
+    max_output_tokens: Optional[int] = None,
+    tool_choice: Optional[str | ResponseFunctionToolChoice] = None,
 ) -> Optional[str]:
     blocks: List[str] = []
 
@@ -99,6 +103,28 @@ def build_custom_instructions(
 
     if tools:
         blocks.append(build_tool_instructions(list(tools)))
+        if isinstance(tool_choice, ResponseFunctionToolChoice):
+            blocks.append(
+                f"You must call the tool named '{tool_choice.name}' and stop immediately after emitting the tool call."
+            )
+        elif tool_choice == "required":
+            blocks.append("You must call at least one tool and stop immediately after emitting the tool call.")
+        elif tool_choice == "none":
+            blocks.append("Do not call any tools in this response.")
+
+    if reasoning and reasoning.effort and reasoning.effort != "none":
+        effort_instructions = {
+            "low": "Think briefly before answering, but do not over-compress the final response.",
+            "medium": "Reason carefully before answering and provide enough detail to fully address the request.",
+            "high": "Reason carefully and thoroughly before answering. Prefer correctness and completeness over brevity.",
+            "xhigh": "Reason very carefully and comprehensively before answering. Provide a detailed and well-supported final response.",
+        }
+        blocks.append(effort_instructions[reasoning.effort])
+
+    if max_output_tokens and max_output_tokens > 0:
+        blocks.append(
+            f"Keep the final answer within roughly {max_output_tokens} tokens while still fully answering the request."
+        )
 
     combined = "\n\n".join(block for block in blocks if block and block.strip()).strip()
     return combined or None
@@ -111,6 +137,9 @@ def build_tubs_payload_from_messages(
     instructions: Optional[str] = None,
     response_format: Optional[dict[str, Any]] = None,
     tools: Optional[Iterable[Any]] = None,
+    reasoning: Optional[ResponseReasoningConfig] = None,
+    max_output_tokens: Optional[int] = None,
+    tool_choice: Optional[str | ResponseFunctionToolChoice] = None,
 ) -> tuple[dict[str, Any], list[tuple[str, bytes, str]], str]:
     payload = TubsChatRequest(
         thread=None,
@@ -121,6 +150,9 @@ def build_tubs_payload_from_messages(
             response_format=response_format,
             tools=tools,
             instructions=instructions,
+            reasoning=reasoning,
+            max_output_tokens=max_output_tokens,
+            tool_choice=tool_choice,
         ),
     ).model_dump(exclude_none=True)
 
@@ -138,6 +170,9 @@ def build_tubs_payload_from_response_request(
         instructions=body.instructions,
         response_format=response_format,
         tools=body.tools,
+        reasoning=body.reasoning,
+        max_output_tokens=body.max_output_tokens,
+        tool_choice=body.tool_choice,
     )
 
 
@@ -158,7 +193,7 @@ def parse_assistant_response(response_text: str) -> tuple[str, Optional[str], Op
                 )
                 for tc in parsed
             ]
-            response_text = strip_tool_xml(response_text)
+            response_text = ""
             finish_reason = "tool_calls"
 
     return response_text, reasoning, tool_calls, finish_reason

@@ -23,7 +23,7 @@ class ResponseInputImage(StrictBaseModel):
 
 
 class ResponseReasoningConfig(StrictBaseModel):
-    effort: Optional[Literal["none", "low", "medium", "high"]] = None
+    effort: Optional[Literal["none", "low", "medium", "high", "xhigh"]] = None
     summary: Optional[Literal["auto", "concise", "detailed"]] = None
 
 

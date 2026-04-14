@@ -40,6 +40,8 @@ def build_tool_instructions(tools: list) -> str:
         "To use any tool, you MUST follow this XML format. If you need to trigger "
         "multiple tools simultaneously, you MUST wrap them in a <tool_calls> root "
         "element and output all of them back-to-back before stopping. "
+        "If you decide to use a tool, emit the XML tool call and stop immediately. "
+        "Do not add any assistant prose before or after the tool-call XML. "
         "Use this EXACT format:\n"
         '<tool_calls><tool_call><name>tool_name</name>'
         '<arguments>{"actual_key": "actual_value"}</arguments>'

@@ -88,3 +88,75 @@ async def test_responses_streaming(monkeypatch):
     assert "Hello " in joined
     assert "world" in joined
     assert "event: response.completed" in joined
+
+
+@pytest.mark.asyncio
+async def test_responses_streaming_hides_tool_xml_and_emits_function_call(monkeypatch):
+    async def fake_stream():
+        yield {
+            "type": "chunk",
+            "content": '<tool_calls><tool_call><name>search</name><arguments>{"query":"latest news"}</arguments></tool_call></tool_calls>',
+        }
+        yield {
+            "type": "done",
+            "response": '<tool_calls><tool_call><name>search</name><arguments>{"query":"latest news"}</arguments></tool_call></tool_calls>Here is a summary',
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        return fake_stream()
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        async with ac.stream(
+            "POST",
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": "Hi",
+                "stream": True,
+                "tools": [{"type": "function", "name": "search", "parameters": {"type": "object"}}],
+            },
+        ) as response:
+            chunks = await _collect_sse_chunks(response)
+
+    joined = "".join(chunks)
+    assert response.status_code == 200
+    assert "<tool_calls>" not in joined
+    assert '"type": "function_call"' in joined
+    assert '"name": "search"' in joined
+
+
+@pytest.mark.asyncio
+async def test_responses_reasoning_is_added_to_custom_instructions(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        instructions = payload["customInstructions"]
+        assert "Reason carefully and thoroughly before answering." in instructions
+        assert "Keep the final answer within roughly 300 tokens" in instructions
+        return {
+            "type": "done",
+            "response": "Detailed answer",
+            "promptTokens": 11,
+            "responseTokens": 7,
+            "totalTokens": 18,
+        }
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": "Explain quantum entanglement",
+                "reasoning": {"effort": "high"},
+                "max_output_tokens": 300,
+            },
+        )
+
+    assert response.status_code == 200
