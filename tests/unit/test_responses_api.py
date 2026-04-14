@@ -36,6 +36,7 @@ async def test_responses_non_streaming(monkeypatch):
             json={
                 "model": "gpt-5.4",
                 "instructions": "Speak plainly.",
+                "store": False,
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
             },
         )

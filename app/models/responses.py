@@ -69,9 +69,15 @@ class ResponseCreateRequest(StrictBaseModel):
     input: Union[str, List[ResponseInputItem]]
     instructions: Optional[str] = None
     stream: bool = False
+    store: Optional[bool] = None
+    include: Optional[List[str]] = None
+    truncation: Optional[Literal["auto", "disabled"]] = None
+    background: Optional[bool] = None
+    service_tier: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_output_tokens: Optional[int] = None
+    max_tool_calls: Optional[int] = None
     tools: Optional[List[ResponseFunctionTool]] = None
     tool_choice: Optional[Union[Literal["auto", "none", "required"], ResponseFunctionToolChoice]] = None
     parallel_tool_calls: Optional[bool] = None
