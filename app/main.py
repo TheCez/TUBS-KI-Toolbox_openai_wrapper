@@ -19,9 +19,15 @@ app.add_exception_handler(Exception, global_exception_handler)
 app.add_exception_handler(httpx.HTTPStatusError, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
+# Mount at /v1 (standard OpenAI base path)
 app.include_router(chat.router, prefix="/v1")
 app.include_router(anthropic.router, prefix="/v1")
 app.include_router(models.router, prefix="/v1")
+
+# Also mount at root so clients with /v1 in their base URL don't double-prefix
+app.include_router(chat.router)
+app.include_router(anthropic.router)
+app.include_router(models.router)
 
 @app.get("/health")
 def health_check():
