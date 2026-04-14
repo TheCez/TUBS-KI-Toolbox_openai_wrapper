@@ -1,6 +1,7 @@
 services:
   api:
     build: .
+    container_name: tubs-api
     ports:
       - "8000:8000"
     environment:
@@ -13,3 +14,9 @@ services:
       # - ANTHROPIC_MODEL_MAP={"claude-3-5-sonnet-20241022": "gpt-4o", "claude-3-opus-20240229": "gpt-5.4"}
     volumes:
       - ./app:/app/app
+    networks:
+      - setup_npm
+
+networks:
+  setup_npm:
+    external: true
