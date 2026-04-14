@@ -11,17 +11,11 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from app.models.openai import (
-    ChatCompletionRequest, ChatCompletionResponse,
-    ChoiceNonStreaming, Usage, Message, ToolCall, ToolCallFunction,
-)
-from app.models.tubs import TubsChatRequest
-from app.services.translation import compile_messages_to_prompt, get_images_from_messages
+from app.models.openai import ChatCompletionRequest, ChatCompletionResponse, ChoiceNonStreaming, Usage, Message
+from app.services.openai_bridge import build_tubs_payload_from_messages, parse_assistant_response
 from app.services.tubs_client import async_send_tubs_request
-from app.services.model_map import resolve_model
 from app.services.prompt import (
-    build_tool_instructions, truncate_at_stop, parse_tool_calls_xml,
-    is_tool_xml_complete, has_tool_xml_start, strip_tool_xml, extract_reasoning,
+    truncate_at_stop, parse_tool_calls_xml, is_tool_xml_complete, has_tool_xml_start,
 )
 
 router = APIRouter()
@@ -37,48 +31,12 @@ async def chat_completions(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     token = credentials.credentials
-
-    # Compile prompt from messages array
-    prompt_string = compile_messages_to_prompt(body.messages)
-
-    # Extract images if any
-    images = get_images_from_messages(body.messages)
-
-    # Build custom instructions from system/developer messages
-    system_messages = [
-        msg.content for msg in body.messages
-        if msg.role.lower() in ("system", "developer") and isinstance(msg.content, str)
-    ]
-    custom_instructions = "\n".join(system_messages).strip()
-
-    # Inject JSON schema instructions if requested
-    if body.response_format:
-        format_type = body.response_format.get("type")
-        if format_type == "json_object":
-            custom_instructions += "\nYou must output your response as a valid JSON object.\n"
-        elif format_type == "json_schema":
-            schema = body.response_format.get("json_schema", {})
-            custom_instructions += (
-                f"\nYou must strictly adhere to the following JSON schema for your output. "
-                f"Output only valid JSON.\nSchema: {json.dumps(schema)}\n"
-            )
-
-    # Inject tool-calling instructions if tools are provided
-    if body.tools:
-        custom_instructions += "\n" + build_tool_instructions(body.tools)
-
-    custom_instructions = custom_instructions.strip() or None
-
-    # Resolve model (handles Anthropic aliases transparently)
-    tubs_model = resolve_model(body.model)
-
-    # Build TU-BS request payload
-    tubs_payload = TubsChatRequest(
-        thread=None,
-        prompt=prompt_string,
-        model=tubs_model,
-        customInstructions=custom_instructions,
-    ).model_dump(exclude_none=True)
+    tubs_payload, images, model_str = build_tubs_payload_from_messages(
+        model=body.model,
+        messages=body.messages,
+        response_format=body.response_format,
+        tools=body.tools,
+    )
 
     # Send to TU-BS backend
     response_or_stream = await async_send_tubs_request(
@@ -90,7 +48,6 @@ async def chat_completions(
 
     req_id = f"chatcmpl-{uuid.uuid4().hex}"
     created_time = int(time.time())
-    model_str = str(body.model.value) if hasattr(body.model, "value") else str(body.model)
 
     # --- Streaming path ---
     if body.stream:
@@ -187,31 +144,11 @@ async def chat_completions(
     c_tokens = response_or_stream.get("responseTokens", 0)
     t_tokens = response_or_stream.get("totalTokens", 0)
 
-    finish_reason = "stop"
-    tool_calls = None
-
     # Stop sequence truncation
     if STOP_TRUNCATION_ENABLED and body.stop:
         stop_sequences = body.stop if isinstance(body.stop, list) else [body.stop]
         response_text, _ = truncate_at_stop(response_text, stop_sequences)
-
-    # Extract reasoning blocks
-    response_text, reasoning = extract_reasoning(response_text)
-
-    # Parse tool calls from XML
-    if has_tool_xml_start(response_text):
-        parsed = parse_tool_calls_xml(response_text)
-        if parsed:
-            tool_calls = [
-                ToolCall(
-                    id=f"call_{uuid.uuid4().hex}",
-                    type="function",
-                    function=ToolCallFunction(name=tc["name"], arguments=tc["arguments"]),
-                )
-                for tc in parsed
-            ]
-            response_text = strip_tool_xml(response_text)
-            finish_reason = "tool_calls"
+    response_text, reasoning, tool_calls, finish_reason = parse_assistant_response(response_text)
 
     return ChatCompletionResponse(
         id=req_id,

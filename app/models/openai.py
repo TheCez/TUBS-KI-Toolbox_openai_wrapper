@@ -1,29 +1,35 @@
 from typing import List, Optional, Union, Dict, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 from app.models.tubs import CloudModel, LocalModel
 
 class ImageUrl(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     url: str
     detail: Optional[Literal["low", "high", "auto"]] = "auto"
 
 class ContentPartText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: Literal["text"]
     text: str
 
 class ContentPartImage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: Literal["image_url"]
     image_url: ImageUrl
 
 class ToolCallFunction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     arguments: str
 
 class ToolCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: str
     type: Literal["function"] = "function"
     function: ToolCallFunction
 
 class Message(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     role: Literal["system", "user", "assistant", "tool", "developer"]
     content: Union[str, List[Union[ContentPartText, ContentPartImage]], None] = None
     reasoning: Optional[str] = None
@@ -33,6 +39,7 @@ class Message(BaseModel):
     tool_call_id: Optional[str] = None
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     model: Union[CloudModel, LocalModel]
     messages: List[Message]
     stream: Optional[bool] = False
@@ -49,16 +56,19 @@ class ChatCompletionRequest(BaseModel):
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
 
 class ChoiceNonStreaming(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     index: int
     message: Message
     finish_reason: Optional[Literal["stop", "length", "tool_calls", "content_filter"]] = "stop"
 
 class Usage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
 
 class ChatCompletionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: str
     object: Literal["chat.completion"] = "chat.completion"
     created: int
@@ -67,17 +77,20 @@ class ChatCompletionResponse(BaseModel):
     usage: Optional[Usage] = None
 
 class Delta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     role: Optional[Literal["system", "user", "assistant", "tool"]] = None
     content: Optional[str] = None
     reasoning: Optional[str] = None
     reasoning_content: Optional[str] = None
 
 class ChoiceStreaming(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     index: int
     delta: Delta
     finish_reason: Optional[Literal["stop", "length", "tool_calls", "content_filter"]] = None
 
 class ChatCompletionChunk(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: str
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
     created: int
@@ -86,10 +99,12 @@ class ChatCompletionChunk(BaseModel):
     usage: Optional[Usage] = None
 
 class ErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     message: str
     type: str
     param: Optional[str] = None
     code: Optional[str] = None
 
 class ErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     error: ErrorDetail

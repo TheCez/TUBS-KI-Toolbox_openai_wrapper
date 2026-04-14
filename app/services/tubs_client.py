@@ -1,7 +1,11 @@
-import httpx
+import asyncio
 import json
 import os
-from typing import AsyncGenerator
+import time
+from contextlib import asynccontextmanager
+from typing import Any
+
+import httpx
 from fastapi import HTTPException
 from app.models.tubs import is_local_model
 
@@ -9,34 +13,90 @@ _BASE = os.getenv("TUBS_BASE_URL", "https://ki-toolbox.tu-braunschweig.de")
 TUBS_CLOUD_URL = f"{_BASE}/api/v1/chat/send"
 TUBS_LOCAL_URL = f"{_BASE}/api/v1/localChat/send"
 
+
+class RequestGate:
+    def __init__(self, max_concurrent_requests: int, min_interval_seconds: float) -> None:
+        self._semaphore = asyncio.Semaphore(max(1, max_concurrent_requests))
+        self._spacing_lock = asyncio.Lock()
+        self._min_interval_seconds = max(0.0, min_interval_seconds)
+        self._last_started_at = 0.0
+
+    @asynccontextmanager
+    async def slot(self):
+        async with self._semaphore:
+            await self._wait_for_turn()
+            yield
+
+    async def _wait_for_turn(self) -> None:
+        if self._min_interval_seconds <= 0:
+            return
+
+        async with self._spacing_lock:
+            now = time.perf_counter()
+            wait_seconds = self._min_interval_seconds - (now - self._last_started_at)
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            self._last_started_at = time.perf_counter()
+
+
+_REQUEST_GATE = RequestGate(
+    max_concurrent_requests=int(os.getenv("TUBS_MAX_CONCURRENT_REQUESTS", "1")),
+    min_interval_seconds=float(os.getenv("TUBS_MIN_REQUEST_INTERVAL_SECONDS", "0")),
+)
+
+def _raise_http_exception(status_code: int, body: str) -> None:
+    detail = body
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict):
+            detail = parsed.get("message") or parsed.get("error") or body
+    except json.JSONDecodeError:
+        pass
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+def _load_ndjson_line(line: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid NDJSON chunk from TU-BS backend: {line[:200]}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Unexpected non-object NDJSON chunk from TU-BS backend")
+    return payload
+
+
 async def _non_stream_response(client: httpx.AsyncClient, url: str, headers: dict, req_kwargs: dict):
     try:
-        response = await client.post(url, headers=headers, **req_kwargs)
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-        
-        # KI-Toolbox API streams NDJSON by default, we capture it all and wait for "done" chunk
-        final_data = {}
-        for line in response.iter_lines():
-            if line:
-                chunk = json.loads(line)
-                if chunk.get("type") == "done":
-                    final_data = chunk
-                    break
-        return final_data
+        async with _REQUEST_GATE.slot():
+            response = await client.post(url, headers=headers, **req_kwargs)
+            if response.status_code != 200:
+                _raise_http_exception(response.status_code, response.text)
+
+            # KI-Toolbox API streams NDJSON by default, we capture it all and wait for "done" chunk
+            final_data = {}
+            for line in response.iter_lines():
+                if line:
+                    chunk = _load_ndjson_line(line)
+                    if chunk.get("type") == "done":
+                        final_data = chunk
+                        break
+            if not final_data:
+                raise HTTPException(status_code=502, detail="TU-BS backend did not return a terminal done chunk")
+            return final_data
     finally:
         await client.aclose()
 
 async def _stream_response(client: httpx.AsyncClient, url: str, headers: dict, req_kwargs: dict):
     try:
-        async with client.stream("POST", url, headers=headers, **req_kwargs) as response:
-            if response.status_code != 200:
-                await response.aread()
-                raise HTTPException(status_code=response.status_code, detail=response.text)
-            
-            async for line in response.aiter_lines():
-                if line:
-                    yield json.loads(line)
+        async with _REQUEST_GATE.slot():
+            async with client.stream("POST", url, headers=headers, **req_kwargs) as response:
+                if response.status_code != 200:
+                    body = (await response.aread()).decode("utf-8", errors="replace")
+                    _raise_http_exception(response.status_code, body)
+
+                async for line in response.aiter_lines():
+                    if line:
+                        yield _load_ndjson_line(line)
     finally:
         await client.aclose()
 
@@ -69,7 +129,7 @@ async def async_send_tubs_request(
         headers["Content-Type"] = "application/json"
         req_kwargs["json"] = payload
         
-    client = httpx.AsyncClient(timeout=60.0)
+    client = httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0))
     
     if stream:
         return _stream_response(client, url, headers, req_kwargs)

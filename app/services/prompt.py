@@ -48,21 +48,13 @@ def build_tool_instructions(tools: list) -> str:
         'provided tool schema. DO NOT wrap the arguments inside a {"json": ...} '
         "parent object.\n"
         "CRITICAL RULES:\n"
-        "1. CRITICAL: When outputting XML tags like <tool_call>, <name>, or "
-        "</arguments>, you MUST NOT escape the forward slash. Output raw, plain "
-        "XML tags only.\n"
-        "2. When creating a new file, DO NOT use apply_patch if possible. Use bash "
-        'with a heredoc (e.g., cat << "EOF" > file.ext) or write_file if available. '
-        "Only use apply_patch for modifying existing code blocks or no other valid "
-        "tool is available.\n"
-        "3. Ensure the JSON inside <arguments> is valid, single-line or properly "
+        "1. When outputting XML tags like <tool_call>, <name>, or </arguments>, "
+        "do not escape the forward slash. Output raw XML tags only.\n"
+        "2. Ensure the JSON inside <arguments> is valid, single-line or properly "
         "escaped, and contains no trailing commas or unescaped characters that "
         "could break a json.loads() call. Be extremely precise with newlines and "
         "special characters.\n"
-        "4. Avoid generating massive files in a single tool call if they contain "
-        "complex nested structures. If a file is over 100 lines, consider writing "
-        "it in logical stages if the client tools support it.\n"
-        '5. Your output must contain ONLY the XML blocks. No conversational filler '
+        '3. Your output must contain ONLY the XML blocks. No conversational filler '
         'like "Here is your code" before or after the <tool_calls> tag, as this '
         "can confuse the client parser.\n"
         f"Available tools: {tools_str}\n"

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from fastapi.exceptions import RequestValidationError
 from app.api.errors import global_exception_handler, http_exception_handler, validation_exception_handler
-from app.api.routes import chat, anthropic, models
+from app.api.routes import chat, anthropic, models, responses
 
 app = FastAPI(title="TU BS KI-Toolbox API Wrapper", version="0.1.0")
 
@@ -23,11 +23,13 @@ app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.include_router(chat.router, prefix="/v1")
 app.include_router(anthropic.router, prefix="/v1")
 app.include_router(models.router, prefix="/v1")
+app.include_router(responses.router, prefix="/v1")
 
 # Also mount at root so clients with /v1 in their base URL don't double-prefix
 app.include_router(chat.router)
 app.include_router(anthropic.router)
 app.include_router(models.router)
+app.include_router(responses.router)
 
 @app.get("/health")
 def health_check():

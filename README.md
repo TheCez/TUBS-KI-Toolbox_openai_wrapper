@@ -13,6 +13,7 @@ With this wrapper, any client, agentic framework, or application that expects an
 - **Streaming Support:** Real-time generation chunked perfectly into Server-Sent Events (SSE) or Anthropic Message events.
 - **Vision Support:** Complete support for base64 encoded multipart image messages in OpenAI and Anthropic format.
 - **Extensive Parity:** Context mapping and proper formatting for standard clients.
+- **Backpressure Controls:** Optional wrapper-side concurrency and pacing limits to protect the TU-BS upstream from bursty agents such as Claude Code.
 
 ## Getting Started
 
@@ -28,6 +29,20 @@ docker-compose up -d --build
 ```
 
 The gateway will now be running locally on **port 8000**. The OpenAI-compatible API base URL is: `http://localhost:8000/v1`
+
+### Concurrency and Rate-Limit Protection
+
+If an agent sends too many requests in parallel and TU-BS responds with `429 Too Many Requests`, configure the wrapper to queue outbound requests instead of forwarding every burst immediately.
+
+```yaml
+environment:
+  - TUBS_MAX_CONCURRENT_REQUESTS=1
+  - TUBS_MIN_REQUEST_INTERVAL_SECONDS=0.5
+```
+
+- `TUBS_MAX_CONCURRENT_REQUESTS` limits how many upstream TU-BS requests may be active at once across the wrapper.
+- `TUBS_MIN_REQUEST_INTERVAL_SECONDS` enforces a minimum delay between the start of outbound TU-BS requests.
+- For aggressive agents, start with `1` concurrent request and `0.5` to `1.0` seconds spacing.
 
 ### 2. Python Demo: Connecting via the `openai` module
 

@@ -7,6 +7,8 @@ services:
       # We rely heavily on passing the token from the client, but this acts as an optional fallback
       - DEFAULT_API_KEY=${DEFAULT_API_KEY:-}
       - ENABLE_STOP_TRUNCATION=${ENABLE_STOP_TRUNCATION:-true}
+      - TUBS_MAX_CONCURRENT_REQUESTS=${TUBS_MAX_CONCURRENT_REQUESTS:-1}
+      - TUBS_MIN_REQUEST_INTERVAL_SECONDS=${TUBS_MIN_REQUEST_INTERVAL_SECONDS:-0}
       # Optional: Override default Anthropic model mappings
       # - ANTHROPIC_MODEL_MAP={"claude-3-5-sonnet-20241022": "gpt-4o", "claude-3-opus-20240229": "gpt-5.4"}
     volumes:
