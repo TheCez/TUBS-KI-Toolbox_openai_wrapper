@@ -7,12 +7,14 @@ from typing import Any, Iterable, List, Optional, Sequence
 from app.models.openai import Message, ToolCall, ToolCallFunction
 from app.models.responses import (
     ResponseCreateRequest,
+    ResponseFunctionCall,
     ResponseFunctionCallOutput,
     ResponseFunctionToolChoice,
     ResponseInputImage,
     ResponseInputMessage,
     ResponseInputText,
     ResponseReasoningConfig,
+    ResponseShorthandInputMessage,
 )
 from app.models.tubs import TubsChatRequest
 from app.services.model_map import resolve_model
@@ -46,6 +48,30 @@ def _response_input_to_messages(input_value: str | List[Any]) -> List[Message]:
             else:
                 content = [part for part in (_content_item_to_message_part(part) for part in item.content) if part] or None
             normalized_messages.append(Message(role=item.role, content=content))
+            continue
+
+        if isinstance(item, ResponseShorthandInputMessage):
+            if isinstance(item.content, str):
+                content = item.content
+            else:
+                content = [part for part in (_content_item_to_message_part(part) for part in item.content) if part] or None
+            normalized_messages.append(Message(role=item.role or "user", content=content))
+            continue
+
+        if isinstance(item, ResponseFunctionCall):
+            normalized_messages.append(
+                Message(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            id=item.call_id,
+                            type="function",
+                            function=ToolCallFunction(name=item.name, arguments=item.arguments),
+                        )
+                    ],
+                )
+            )
             continue
 
         if isinstance(item, ResponseFunctionCallOutput):

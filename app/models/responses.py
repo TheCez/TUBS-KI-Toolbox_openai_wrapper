@@ -50,14 +50,29 @@ class ResponseInputMessage(StrictBaseModel):
     type: Literal["message"] = "message"
 
 
+class ResponseShorthandInputMessage(StrictBaseModel):
+    content: Union[str, List[Union[ResponseInputText, ResponseInputImage]]]
+    role: Optional[Literal["system", "developer", "user", "assistant", "tool"]] = None
+    type: Optional[str] = None
+
+
 class ResponseFunctionCallOutput(StrictBaseModel):
     type: Literal["function_call_output"]
     call_id: str
     output: Union[str, Dict[str, Any], List[Any]]
 
 
+class ResponseFunctionCall(StrictBaseModel):
+    type: Literal["function_call"]
+    call_id: str
+    name: str
+    arguments: str
+
+
 ResponseInputItem = Union[
     ResponseInputMessage,
+    ResponseShorthandInputMessage,
+    ResponseFunctionCall,
     ResponseFunctionCallOutput,
     ResponseInputText,
     ResponseInputImage,

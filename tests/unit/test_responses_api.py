@@ -53,6 +53,75 @@ async def test_responses_non_streaming(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_responses_accepts_shorthand_input_item(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert payload["prompt"] == "[User]: Hello from shorthand"
+        return {
+            "type": "done",
+            "response": "Hello back",
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": [{"content": "Hello from shorthand"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["output_text"] == "Hello back"
+
+
+@pytest.mark.asyncio
+async def test_responses_accepts_lobechat_tool_loop_items(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "[Tool Result]: <searchResults>done</searchResults>" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Summarized answer",
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": [
+                    {"content": "Hi what is the latest situation?", "role": "user"},
+                    {
+                        "type": "function_call",
+                        "call_id": "call_123",
+                        "name": "lobe-web-browsing____search____builtin",
+                        "arguments": "{\"query\":\"latest US Iran conflict news developments\"}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_123",
+                        "output": "<searchResults>done</searchResults>",
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["output_text"] == "Summarized answer"
+
+
+@pytest.mark.asyncio
 async def test_responses_streaming(monkeypatch):
     async def fake_stream():
         yield {"type": "chunk", "content": "Hello "}

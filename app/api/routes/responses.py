@@ -6,10 +6,11 @@ Translates Responses API requests into TU-BS KI-Toolbox API format.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -20,6 +21,7 @@ from app.services.tubs_client import async_send_tubs_request
 
 router = APIRouter()
 security = HTTPBearer()
+logger = logging.getLogger("uvicorn.error")
 
 
 def _response_usage(done_chunk: dict) -> dict:
@@ -58,9 +60,25 @@ def _response_function_call_item(name: str, arguments: str, call_id: str | None 
 
 @router.post("/responses")
 async def create_response(
+    request: Request,
     body: ResponseCreateRequest,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
+    sanitized_headers = {
+        key: ("<redacted>" if key.lower() == "authorization" else value)
+        for key, value in request.headers.items()
+        if key.lower() in {"authorization", "content-type", "user-agent"}
+    }
+    try:
+        logger.info(
+            "Incoming request path=%s headers=%s body=%s",
+            request.url.path,
+            sanitized_headers,
+            json.loads((await request.body()).decode("utf-8")),
+        )
+    except Exception:
+        logger.info("Incoming request path=%s headers=%s", request.url.path, sanitized_headers)
+
     token = credentials.credentials
     payload, images, model_str = build_tubs_payload_from_response_request(body)
 
@@ -86,6 +104,7 @@ async def create_response(
 
             def emit(event_type: str, data: dict) -> str:
                 event = {"type": event_type, **data}
+                logger.info("Outgoing responses event=%s payload=%s", event_type, event)
                 return f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
             try:
@@ -290,6 +309,8 @@ async def create_response(
         "reasoning": body.reasoning.model_dump(exclude_none=True) if body.reasoning else None,
         "usage": _response_usage(response_or_stream),
     }
+
+    logger.info("Outgoing responses payload=%s", response_payload)
 
     if reasoning:
         response_payload["reasoning_summary"] = reasoning
