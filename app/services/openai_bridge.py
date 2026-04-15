@@ -101,7 +101,7 @@ def build_custom_instructions(
     instructions: Optional[str] = None,
     reasoning: Optional[ResponseReasoningConfig] = None,
     max_output_tokens: Optional[int] = None,
-    tool_choice: Optional[str | ResponseFunctionToolChoice] = None,
+    tool_choice: Optional[str | dict[str, Any] | ResponseFunctionToolChoice] = None,
 ) -> Optional[str]:
     blocks: List[str] = []
 
@@ -133,6 +133,12 @@ def build_custom_instructions(
             blocks.append(
                 f"You must call the tool named '{tool_choice.name}' and stop immediately after emitting the tool call."
             )
+        elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+            function_name = tool_choice.get("function", {}).get("name")
+            if function_name:
+                blocks.append(
+                    f"You must call the tool named '{function_name}' and stop immediately after emitting the tool call."
+                )
         elif tool_choice == "required":
             blocks.append("You must call at least one tool and stop immediately after emitting the tool call.")
         elif tool_choice == "none":
@@ -165,7 +171,7 @@ def build_tubs_payload_from_messages(
     tools: Optional[Iterable[Any]] = None,
     reasoning: Optional[ResponseReasoningConfig] = None,
     max_output_tokens: Optional[int] = None,
-    tool_choice: Optional[str | ResponseFunctionToolChoice] = None,
+    tool_choice: Optional[str | dict[str, Any] | ResponseFunctionToolChoice] = None,
 ) -> tuple[dict[str, Any], list[tuple[str, bytes, str]], str]:
     payload = TubsChatRequest(
         thread=None,

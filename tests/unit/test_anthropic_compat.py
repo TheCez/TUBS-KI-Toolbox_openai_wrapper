@@ -1,0 +1,131 @@
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
+
+
+async def _collect_sse_chunks(response) -> list[str]:
+    chunks = []
+    async for chunk in response.aiter_text():
+        chunks.append(chunk)
+    return chunks
+
+
+@pytest.mark.asyncio
+async def test_anthropic_accepts_compat_fields(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Do not call any tools in this response." in payload["customInstructions"]
+        assert "Reason carefully before answering and provide enough detail to fully address the request." in payload["customInstructions"]
+        return {
+            "type": "done",
+            "response": "Plain answer",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "tools": [{"name": "search", "input_schema": {"type": "object"}}],
+                "tool_choice": {"type": "none"},
+                "thinking": {"type": "enabled", "budget_tokens": 2048},
+                "metadata": {"source": "claude-code"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Plain answer"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_prompt_includes_tool_history(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "[Tool Intention]:" in payload["prompt"]
+        assert "[Tool Result]: sunny" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Final answer",
+            "promptTokens": 6,
+            "responseTokens": 3,
+            "totalTokens": 9,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [
+                    {"role": "user", "content": "Weather?"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "get_weather",
+                                "input": {"city": "Berlin"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "sunny"},
+                        ],
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_anthropic_streaming_hides_tool_xml(monkeypatch):
+    async def fake_stream():
+        yield {
+            "type": "chunk",
+            "content": '<tool_calls><tool_call><name>search</name><arguments>{"query":"latest"}</arguments></tool_call></tool_calls>',
+        }
+        yield {
+            "type": "done",
+            "response": '<tool_calls><tool_call><name>search</name><arguments>{"query":"latest"}</arguments></tool_call></tool_calls>Here is prose',
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        return fake_stream()
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        async with ac.stream(
+            "POST",
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [{"role": "user", "content": "Latest news?"}],
+                "stream": True,
+                "tools": [{"name": "search", "input_schema": {"type": "object"}}],
+            },
+        ) as response:
+            chunks = await _collect_sse_chunks(response)
+
+    joined = "".join(chunks)
+    assert response.status_code == 200
+    assert "<tool_calls>" not in joined
+    assert '"type": "tool_use"' in joined

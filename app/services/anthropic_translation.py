@@ -18,9 +18,15 @@ def compile_anthropic_messages_to_prompt(messages: List[Message]) -> str:
                 elif isinstance(part, dict) and part.get("type") == "text":
                     content_text += part.get("text", "") + "\n"
                 elif getattr(part, "type", None) == "tool_use":
-                    content_text += f"[Tool Intention]: I will use the tool '{getattr(part, 'name', '')}'\n"
+                    tool_id = getattr(part, "id", "")
+                    tool_input = getattr(part, "input", {})
+                    content_text += (
+                        f"[Tool Intention]: {getattr(part, 'name', '')}({tool_input}) [id={tool_id}]\n"
+                    )
                 elif isinstance(part, dict) and part.get("type") == "tool_use":
-                    content_text += f"[Tool Intention]: I will use the tool '{part.get('name', '')}'\n"
+                    content_text += (
+                        f"[Tool Intention]: {part.get('name', '')}({part.get('input', {})}) [id={part.get('id', '')}]\n"
+                    )
                 elif getattr(part, "type", None) == "tool_result":
                     res = getattr(part, 'content', '')
                     if isinstance(res, list):

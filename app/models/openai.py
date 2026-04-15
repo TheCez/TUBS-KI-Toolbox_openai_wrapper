@@ -44,6 +44,7 @@ class ChatCompletionRequest(BaseModel):
     messages: List[Message]
     stream: Optional[bool] = False
     max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = 1.0
     n: Optional[int] = 1
@@ -51,6 +52,12 @@ class ChatCompletionRequest(BaseModel):
     presence_penalty: Optional[float] = 0.0
     frequency_penalty: Optional[float] = 0.0
     user: Optional[str] = None
+    store: Optional[bool] = None
+    metadata: Optional[Dict[str, str]] = None
+    parallel_tool_calls: Optional[bool] = None
+    service_tier: Optional[str] = None
+    stream_options: Optional[Dict[str, Any]] = None
+    modalities: Optional[List[str]] = None
     response_format: Optional[Dict[str, Any]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None

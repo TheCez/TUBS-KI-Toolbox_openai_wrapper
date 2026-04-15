@@ -12,18 +12,19 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.models.anthropic import (
     MessageRequest, MessageResponse, MessageResponseUsage,
-    TextContentBlock, ToolUseContentBlock,
+    TextContentBlock, ToolUseContentBlock, ToolChoice,
 )
-from app.models.tubs import TubsChatRequest
+from app.models.responses import ResponseReasoningConfig
 from app.services.anthropic_translation import (
     compile_anthropic_messages_to_prompt, get_images_from_anthropic_messages,
 )
+from app.services.openai_bridge import build_custom_instructions
 from app.services.tubs_client import async_send_tubs_request
 from app.services.model_map import resolve_model
 from app.services.prompt import (
-    build_tool_instructions, truncate_at_stop, parse_tool_calls_xml,
-    is_tool_xml_complete, has_tool_xml_start, strip_tool_xml,
+    truncate_at_stop, parse_tool_calls_xml, is_tool_xml_complete, has_tool_xml_start,
 )
+from app.models.tubs import TubsChatRequest
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
@@ -42,46 +43,72 @@ async def get_anthropic_token(
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
+def _tool_choice_to_openai_style(tool_choice):
+    if not tool_choice:
+        return None
+    if isinstance(tool_choice, ToolChoice):
+        if tool_choice.type == "tool" and tool_choice.name:
+            return {"type": "function", "function": {"name": tool_choice.name}}
+        if tool_choice.type == "any":
+            return "required"
+        return tool_choice.type
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") == "tool" and tool_choice.get("name"):
+            return {"type": "function", "function": {"name": tool_choice["name"]}}
+        if tool_choice.get("type") == "any":
+            return "required"
+        return tool_choice.get("type")
+    return None
+
+
+def _thinking_to_reasoning(thinking) -> ResponseReasoningConfig | None:
+    if not thinking or getattr(thinking, "type", None) == "disabled":
+        return None
+    budget = getattr(thinking, "budget_tokens", None) or 0
+    effort = "medium"
+    if budget >= 12000:
+        effort = "xhigh"
+    elif budget >= 4000:
+        effort = "high"
+    elif budget >= 1500:
+        effort = "medium"
+    else:
+        effort = "low"
+    return ResponseReasoningConfig(effort=effort)
+
+
 @router.post("/messages", response_model=MessageResponse)
 async def anthropic_messages(
     request: Request,
     body: MessageRequest,
     token: str = Depends(get_anthropic_token),
 ):
-    # Compile prompt from Anthropic messages
     prompt_string = compile_anthropic_messages_to_prompt(body.messages)
-
-    # Extract images if any
     images = get_images_from_anthropic_messages(body.messages)
 
-    # Build custom instructions from system prompt
-    custom_instructions = ""
+    system_messages = []
     if body.system:
         if isinstance(body.system, str):
-            custom_instructions += body.system + "\n\n"
+            system_messages.append(body.system)
         elif isinstance(body.system, list):
-            custom_instructions += "\n".join(
-                part.text for part in body.system if hasattr(part, "text")
-            ) + "\n\n"
+            system_messages.extend(part.text for part in body.system if hasattr(part, "text"))
 
-    # Inject tool-calling instructions if tools are provided
-    if body.tools:
-        custom_instructions += build_tool_instructions(body.tools)
+    custom_instructions = build_custom_instructions(
+        messages=[],
+        instructions="\n".join(system_messages).strip() or None,
+        tools=body.tools,
+        reasoning=_thinking_to_reasoning(body.thinking),
+        max_output_tokens=body.max_tokens,
+        tool_choice=_tool_choice_to_openai_style(body.tool_choice),
+    )
 
-    custom_instructions = custom_instructions.strip() or None
-
-    # Resolve model (handles Anthropic aliases transparently)
-    tubs_model = resolve_model(body.model)
-
-    # Build TU-BS request payload
     tubs_payload = TubsChatRequest(
         thread=None,
         prompt=prompt_string,
-        model=tubs_model,
+        model=resolve_model(body.model),
         customInstructions=custom_instructions,
     ).model_dump(exclude_none=True)
 
-    # Send to TU-BS backend
     response_or_stream = await async_send_tubs_request(
         payload=tubs_payload,
         images=images,
@@ -91,7 +118,6 @@ async def anthropic_messages(
 
     req_id = f"msg_{uuid.uuid4().hex}"
 
-    # --- Streaming path ---
     if body.stream:
         async def event_generator():
             text_buffer = ""
@@ -99,12 +125,12 @@ async def anthropic_messages(
             has_yielded_tool = False
             content_block_idx = 0
             text_block_open = True
+            output_tokens = 0
 
             def _event(event_type: str, data: dict) -> str:
                 return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
             try:
-                # Anthropic message_start
                 yield _event("message_start", {
                     "type": "message_start",
                     "message": {
@@ -115,7 +141,6 @@ async def anthropic_messages(
                     },
                 })
 
-                # Initial text content block
                 yield _event("content_block_start", {
                     "type": "content_block_start", "index": content_block_idx,
                     "content_block": {"type": "text", "text": ""},
@@ -135,14 +160,12 @@ async def anthropic_messages(
                                 if not text_buffer.strip():
                                     text_buffer = ""
                                     continue
-
                                 yield _event("content_block_start", {
                                     "type": "content_block_start", "index": content_block_idx,
                                     "content_block": {"type": "text", "text": ""},
                                 })
                                 text_block_open = True
 
-                            # Stop sequence check
                             if STOP_TRUNCATION_ENABLED and body.stop_sequences:
                                 truncated, was_hit = truncate_at_stop(text_buffer, body.stop_sequences)
                                 if was_hit:
@@ -154,15 +177,14 @@ async def anthropic_messages(
                                     yield _event("message_delta", {
                                         "type": "message_delta",
                                         "delta": {"stop_reason": "stop_sequence", "stop_sequence": None},
-                                        "usage": {"output_tokens": 0},
+                                        "usage": {"output_tokens": output_tokens},
                                     })
                                     yield _event("message_stop", {"type": "message_stop"})
                                     break
 
-                            # Partial match lookahead
                             last_open = text_buffer.rfind("<")
                             if last_open != -1 and "<tool_calls>".startswith(text_buffer[last_open:]):
-                                continue  # Hold buffer
+                                continue
 
                             yield _event("content_block_delta", {
                                 "type": "content_block_delta", "index": content_block_idx,
@@ -173,10 +195,10 @@ async def anthropic_messages(
                         elif is_tool_xml_complete(text_buffer):
                             parsed = parse_tool_calls_xml(text_buffer)
                             if parsed:
-                                # Close text block
-                                yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
-                                text_block_open = False
-                                content_block_idx += 1
+                                if text_block_open:
+                                    yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                    text_block_open = False
+                                    content_block_idx += 1
 
                                 for tc in parsed:
                                     tool_id = f"toolu_{uuid.uuid4().hex}"
@@ -190,19 +212,35 @@ async def anthropic_messages(
                                     })
                                     yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
                                     content_block_idx += 1
-
                                 has_yielded_tool = True
-                            else:
-                                yield _event("content_block_delta", {
-                                    "type": "content_block_delta", "index": content_block_idx,
-                                    "delta": {"type": "text_delta", "text": text_buffer},
-                                })
 
                             text_buffer = ""
                             is_buffering_tool = False
 
                     elif chunk_type == "done":
-                        if text_block_open:
+                        output_tokens = chunk.get("responseTokens", 0)
+                        final_response = chunk.get("response", "")
+                        parsed = parse_tool_calls_xml(final_response) if has_tool_xml_start(final_response) else []
+
+                        if parsed and not has_yielded_tool:
+                            if text_block_open:
+                                yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                text_block_open = False
+                                content_block_idx += 1
+                            for tc in parsed:
+                                tool_id = f"toolu_{uuid.uuid4().hex}"
+                                yield _event("content_block_start", {
+                                    "type": "content_block_start", "index": content_block_idx,
+                                    "content_block": {"type": "tool_use", "id": tool_id, "name": tc["name"]},
+                                })
+                                yield _event("content_block_delta", {
+                                    "type": "content_block_delta", "index": content_block_idx,
+                                    "delta": {"type": "input_json_delta", "partial_json": tc["arguments"]},
+                                })
+                                yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                content_block_idx += 1
+                            has_yielded_tool = True
+                        elif text_block_open:
                             yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
 
                         yield _event("message_delta", {
@@ -211,16 +249,15 @@ async def anthropic_messages(
                                 "stop_reason": "tool_use" if has_yielded_tool else "end_turn",
                                 "stop_sequence": None,
                             },
-                            "usage": {"output_tokens": chunk.get("responseTokens", 0)},
+                            "usage": {"output_tokens": output_tokens},
                         })
                         yield _event("message_stop", {"type": "message_stop"})
 
-            except Exception as e:
-                yield _event("error", {"type": "error", "error": {"type": "api_error", "message": str(e)}})
+            except Exception as exc:
+                yield _event("error", {"type": "error", "error": {"type": "api_error", "message": str(exc)}})
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-    # --- Non-streaming path ---
     response_text = response_or_stream.get("response", "")
     p_tokens = response_or_stream.get("promptTokens", 0)
     c_tokens = response_or_stream.get("responseTokens", 0)
@@ -228,26 +265,19 @@ async def anthropic_messages(
     stop_reason = "end_turn"
     content_blocks = []
 
-    # Stop sequence truncation
     if STOP_TRUNCATION_ENABLED and body.stop_sequences:
         response_text, was_truncated = truncate_at_stop(response_text, body.stop_sequences)
         if was_truncated:
             stop_reason = "stop_sequence"
 
-    # Parse tool calls from XML
     if has_tool_xml_start(response_text):
         parsed = parse_tool_calls_xml(response_text)
         if parsed:
-            text_content = strip_tool_xml(response_text)
-            if text_content:
-                content_blocks.append(TextContentBlock(type="text", text=text_content))
-
             for tc in parsed:
                 try:
                     args_json = json.loads(tc["arguments"])
                 except (json.JSONDecodeError, TypeError):
                     args_json = {}
-
                 content_blocks.append(ToolUseContentBlock(
                     type="tool_use",
                     id=f"toolu_{uuid.uuid4().hex}",
@@ -255,7 +285,7 @@ async def anthropic_messages(
                     input=args_json,
                 ))
             stop_reason = "tool_use"
-        else:
+        elif response_text:
             content_blocks.append(TextContentBlock(type="text", text=response_text))
     elif response_text:
         content_blocks.append(TextContentBlock(type="text", text=response_text))

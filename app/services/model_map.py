@@ -23,12 +23,20 @@ def get_anthropic_model_map() -> dict:
 
     # Default mapping: Anthropic model -> TU-BS equivalent
     return {
+        "claude-opus-4-1": CloudModel.GPT_5_4.value,
+        "claude-opus-4-1-20250805": CloudModel.GPT_5_4.value,
+        "claude-opus-4-0": CloudModel.GPT_5_4.value,
+        "claude-opus-4-20250514": CloudModel.GPT_5_4.value,
+        "claude-sonnet-4-0": CloudModel.GPT_5_2.value,
+        "claude-sonnet-4-20250514": CloudModel.GPT_5_2.value,
         "claude-3-5-opus-latest": CloudModel.GPT_5_4.value,
         "claude-3-opus-20240229": CloudModel.GPT_5_4.value,
         "claude-3-5-sonnet-latest": CloudModel.GPT_O3.value,
         "claude-3-5-sonnet-20241022": CloudModel.GPT_4O.value,
         "claude-3-5-sonnet-20240620": CloudModel.GPT_4O.value,
         "claude-3-7-sonnet-20250219": CloudModel.GPT_O3.value,
+        "claude-3-7-sonnet-latest": CloudModel.GPT_O3.value,
+        "claude-3-5-haiku-latest": CloudModel.GPT_O4_MINI.value,
         "claude-3-5-haiku-20241022": CloudModel.GPT_O4_MINI.value,
         "claude-3-haiku-20240307": CloudModel.GPT_4O_MINI.value,
     }

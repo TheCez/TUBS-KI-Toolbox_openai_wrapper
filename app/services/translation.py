@@ -17,6 +17,13 @@ def compile_messages_to_prompt(messages: List[Message]) -> str:
         if msg.role.lower() == "tool":
             role = "Tool Result"
         content_text = ""
+
+        if msg.role.lower() == "assistant" and msg.tool_calls:
+            tool_lines = [
+                f"{tool_call.function.name}({tool_call.function.arguments}) [id={tool_call.id}]"
+                for tool_call in msg.tool_calls
+            ]
+            compiled_prompt += "[Assistant Tool Calls]: " + "; ".join(tool_lines) + "\n"
         
         if isinstance(msg.content, str):
             content_text = msg.content
