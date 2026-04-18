@@ -5,6 +5,7 @@ from app.services.conversation_state import (
     remember_thread_id,
     reset_thread_cache,
 )
+import app.services.conversation_state as conversation_state
 
 
 def test_compact_messages_keeps_recent_turns_and_summarizes_older(monkeypatch):
@@ -41,3 +42,47 @@ def test_thread_cache_remembers_thread_by_conversation_key():
     assert get_cached_thread_id(conversation_key) is None
     remember_thread_id(conversation_key, {"thread": {"id": "thread_abc"}})
     assert get_cached_thread_id(conversation_key) == "thread_abc"
+
+
+def test_thread_cache_uses_redis_backend_when_configured(monkeypatch):
+    class FakeRedisModule:
+        @staticmethod
+        def from_url(*args, **kwargs):
+            return fake_client
+
+    class FakeRedisClient:
+        def __init__(self):
+            self.store = {}
+
+        def ping(self):
+            return True
+
+        def get(self, key):
+            return self.store.get(key)
+
+        def set(self, key, value, ex=None):
+            self.store[key] = value
+
+        def keys(self, pattern):
+            prefix = pattern[:-1]
+            return [key for key in self.store if key.startswith(prefix)]
+
+        def delete(self, *keys):
+            for key in keys:
+                self.store.pop(key, None)
+
+    fake_client = FakeRedisClient()
+
+    monkeypatch.setenv("TUBS_THREAD_CACHE_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://example:6379/0")
+    monkeypatch.setattr(conversation_state, "Redis", FakeRedisModule)
+
+    reset_thread_cache()
+    conversation_key = build_conversation_key(
+        bearer_token="token-456",
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Build me a dashboard"}],
+    )
+
+    remember_thread_id(conversation_key, {"thread": {"id": "thread_xyz"}})
+    assert get_cached_thread_id(conversation_key) == "thread_xyz"

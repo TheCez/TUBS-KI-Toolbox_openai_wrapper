@@ -4,7 +4,16 @@ import hashlib
 import os
 import re
 import time
-from typing import Any, Iterable, Sequence
+from typing import Any, Protocol, Sequence
+
+try:
+    from redis import Redis
+    from redis.exceptions import RedisError
+except ImportError:  # pragma: no cover - exercised implicitly by environments without redis installed
+    Redis = None
+
+    class RedisError(Exception):
+        pass
 
 from app.services.translation import (
     extract_text_from_content,
@@ -12,7 +21,67 @@ from app.services.translation import (
     extract_tool_results_from_content,
 )
 
-_THREAD_CACHE: dict[str, tuple[str, float]] = {}
+
+class ThreadCacheBackend(Protocol):
+    def get(self, conversation_key: str) -> str | None: ...
+
+    def set(self, conversation_key: str, thread_id: str, ttl_seconds: int) -> None: ...
+
+    def clear(self) -> None: ...
+
+
+class InMemoryThreadCache:
+    def __init__(self) -> None:
+        self._cache: dict[str, tuple[str, float]] = {}
+
+    def get(self, conversation_key: str) -> str | None:
+        now = time.time()
+        ttl = _thread_cache_ttl_seconds()
+        expired = [key for key, (_, created_at) in self._cache.items() if now - created_at > ttl]
+        for key in expired:
+            self._cache.pop(key, None)
+
+        cached = self._cache.get(conversation_key)
+        if not cached:
+            return None
+        return cached[0]
+
+    def set(self, conversation_key: str, thread_id: str, ttl_seconds: int) -> None:
+        self._cache[conversation_key] = (thread_id, time.time())
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+
+class RedisThreadCache:
+    def __init__(self, redis_url: str, key_prefix: str) -> None:
+        if Redis is None:
+            raise RedisError("redis package is not installed")
+        self._client = Redis.from_url(redis_url, decode_responses=True)
+        self._key_prefix = key_prefix
+
+    def _key(self, conversation_key: str) -> str:
+        return f"{self._key_prefix}{conversation_key}"
+
+    def get(self, conversation_key: str) -> str | None:
+        value = self._client.get(self._key(conversation_key))
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    def set(self, conversation_key: str, thread_id: str, ttl_seconds: int) -> None:
+        self._client.set(self._key(conversation_key), thread_id, ex=ttl_seconds)
+
+    def clear(self) -> None:
+        try:
+            keys = self._client.keys(f"{self._key_prefix}*")
+            if keys:
+                self._client.delete(*keys)
+        except RedisError:
+            pass
+
+
+_BACKEND: ThreadCacheBackend | None = None
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -41,7 +110,7 @@ def _message_content(message: Any) -> Any:
 def _tool_call_lines(content: Any) -> list[str]:
     calls = extract_tool_calls_from_content(content)
     return [
-        f"assistant used `{tool_call['name']}` with { _truncate(tool_call['arguments'], 180) }"
+        f"assistant used `{tool_call['name']}` with {_truncate(tool_call['arguments'], 180)}"
         for tool_call in calls
         if tool_call.get("name")
     ]
@@ -82,6 +151,47 @@ def _keep_last_turns() -> int:
 
 def _summary_budget() -> int:
     return max(400, int(os.getenv("TUBS_COMPACT_SUMMARY_CHARS", "4000")))
+
+
+def _thread_cache_ttl_seconds() -> int:
+    return max(60, int(os.getenv("TUBS_THREAD_CACHE_TTL_SECONDS", "21600")))
+
+
+def _thread_cache_backend_name() -> str:
+    return os.getenv("TUBS_THREAD_CACHE_BACKEND", "redis").strip().lower()
+
+
+def _thread_cache_prefix() -> str:
+    return os.getenv("TUBS_THREAD_CACHE_PREFIX", "tubs:thread:").strip() or "tubs:thread:"
+
+
+def _redis_url() -> str | None:
+    value = os.getenv("REDIS_URL", "").strip()
+    return value or None
+
+
+def _build_backend() -> ThreadCacheBackend:
+    backend_name = _thread_cache_backend_name()
+    if backend_name == "memory":
+        return InMemoryThreadCache()
+
+    redis_url = _redis_url()
+    if backend_name == "redis" and redis_url and Redis is not None:
+        try:
+            backend = RedisThreadCache(redis_url, _thread_cache_prefix())
+            backend._client.ping()
+            return backend
+        except RedisError:
+            pass
+
+    return InMemoryThreadCache()
+
+
+def _backend() -> ThreadCacheBackend:
+    global _BACKEND
+    if _BACKEND is None:
+        _BACKEND = _build_backend()
+    return _BACKEND
 
 
 def compact_messages(messages: Sequence[Any]) -> tuple[list[Any], str | None]:
@@ -164,24 +274,11 @@ def build_conversation_key(
     return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
 
 
-def _thread_cache_ttl_seconds() -> int:
-    return max(60, int(os.getenv("TUBS_THREAD_CACHE_TTL_SECONDS", "21600")))
-
-
-def _prune_thread_cache() -> None:
-    now = time.time()
-    ttl = _thread_cache_ttl_seconds()
-    expired = [key for key, (_, created_at) in _THREAD_CACHE.items() if now - created_at > ttl]
-    for key in expired:
-        _THREAD_CACHE.pop(key, None)
-
-
 def get_cached_thread_id(conversation_key: str) -> str | None:
-    _prune_thread_cache()
-    cached = _THREAD_CACHE.get(conversation_key)
-    if not cached:
+    try:
+        return _backend().get(conversation_key)
+    except RedisError:
         return None
-    return cached[0]
 
 
 def remember_thread_id(conversation_key: str, response_payload: dict[str, Any] | None) -> None:
@@ -193,8 +290,14 @@ def remember_thread_id(conversation_key: str, response_payload: dict[str, Any] |
     else:
         thread_id = thread
     if isinstance(thread_id, str) and thread_id.strip():
-        _THREAD_CACHE[conversation_key] = (thread_id.strip(), time.time())
+        try:
+            _backend().set(conversation_key, thread_id.strip(), _thread_cache_ttl_seconds())
+        except RedisError:
+            pass
 
 
 def reset_thread_cache() -> None:
-    _THREAD_CACHE.clear()
+    global _BACKEND
+    if _BACKEND is not None:
+        _BACKEND.clear()
+    _BACKEND = None

@@ -1,7 +1,16 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: tubs-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - setup_npm
+
   api:
     build: .
     container_name: tubs-api
+    depends_on:
+      - redis
     ports:
       - "8000:8000"
     environment:
@@ -10,6 +19,9 @@ services:
       - ENABLE_STOP_TRUNCATION=${ENABLE_STOP_TRUNCATION:-true}
       - TUBS_MAX_CONCURRENT_REQUESTS=${TUBS_MAX_CONCURRENT_REQUESTS:-1}
       - TUBS_MIN_REQUEST_INTERVAL_SECONDS=${TUBS_MIN_REQUEST_INTERVAL_SECONDS:-0}
+      - TUBS_THREAD_CACHE_BACKEND=${TUBS_THREAD_CACHE_BACKEND:-redis}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - TUBS_THREAD_CACHE_TTL_SECONDS=${TUBS_THREAD_CACHE_TTL_SECONDS:-21600}
       # Optional: Override default Anthropic model mappings
       # - ANTHROPIC_MODEL_MAP={"claude-3-5-sonnet-20241022": "gpt-4o", "claude-3-opus-20240229": "gpt-5.4"}
     volumes:
