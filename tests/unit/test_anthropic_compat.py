@@ -45,6 +45,36 @@ async def test_anthropic_accepts_compat_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anthropic_accepts_context_management(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        return {
+            "type": "done",
+            "response": "Plain answer",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "context_management": {
+                    "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Plain answer"
+
+
+@pytest.mark.asyncio
 async def test_anthropic_prompt_includes_tool_history(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "[Tool Intention]:" in payload["prompt"]

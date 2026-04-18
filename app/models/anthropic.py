@@ -66,6 +66,7 @@ class MessageRequest(BaseModel):
     service_tier: Optional[str] = None
     tool_choice: Optional[Union[ToolChoice, Dict[str, Any]]] = None
     thinking: Optional[ThinkingConfig] = None
+    context_management: Optional[Dict[str, Any]] = None
 
 class MessageResponseUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
