@@ -319,3 +319,44 @@ async def test_anthropic_streaming_hides_tool_xml(monkeypatch):
     assert response.status_code == 200
     assert "<tool_calls>" not in joined
     assert '"type": "tool_use"' in joined
+
+
+@pytest.mark.asyncio
+async def test_anthropic_downgrades_invalid_tool_call_to_text(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        return {
+            "type": "done",
+            "response": '<tool_calls><tool_call><name>AskUserQuestion</name><arguments>{}</arguments></tool_call></tool_calls>',
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [{"role": "user", "content": "Ask me something"}],
+                "tools": [
+                    {
+                        "name": "AskUserQuestion",
+                        "description": "Ask the user a question",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"questions": {"type": "array"}},
+                            "required": ["questions"],
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["stop_reason"] == "end_turn"
+    assert data["content"][0]["type"] == "text"
+    assert "missing required fields: questions" in data["content"][0]["text"]

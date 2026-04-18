@@ -275,3 +275,44 @@ async def test_responses_reasoning_is_added_to_custom_instructions(monkeypatch):
         )
 
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_responses_downgrades_invalid_tool_call_to_text(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        return {
+            "type": "done",
+            "response": '<tool_calls><tool_call><name>AskUserQuestion</name><arguments>{}</arguments></tool_call></tool_calls>',
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": "Ask me something",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "AskUserQuestion",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"questions": {"type": "array"}},
+                            "required": ["questions"],
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["output_text"]
+    assert "missing required fields: questions" in data["output_text"]
+    assert not any(item["type"] == "function_call" for item in data["output"])

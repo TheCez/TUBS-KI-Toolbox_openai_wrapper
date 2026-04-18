@@ -228,3 +228,46 @@ async def test_chat_completions_streaming_hides_tool_xml(monkeypatch):
     assert "<tool_calls>" not in joined
     assert '"tool_calls"' in joined
     assert '"finish_reason": "tool_calls"' in joined
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_downgrades_invalid_tool_call_to_text(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        return {
+            "type": "done",
+            "response": '<tool_calls><tool_call><name>AskUserQuestion</name><arguments>{}</arguments></tool_call></tool_calls>',
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "Ask me something"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "AskUserQuestion",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"questions": {"type": "array"}},
+                                "required": ["questions"],
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["choices"][0]["finish_reason"] == "stop"
+    assert data["choices"][0]["message"]["tool_calls"] is None
+    assert "missing required fields: questions" in data["choices"][0]["message"]["content"]

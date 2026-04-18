@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.models.openai import ChatCompletionRequest, ChatCompletionResponse, ChoiceNonStreaming, Message, Usage
 from app.services.openai_bridge import build_tubs_payload_from_messages, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml, truncate_at_stop
+from app.services.tool_validation import validate_tool_calls
 from app.services.tubs_client import async_send_tubs_request
 
 router = APIRouter()
@@ -108,23 +109,32 @@ async def chat_completions(
                         if is_tool_xml_complete(text_buffer):
                             parsed = parse_tool_calls_xml(text_buffer)
                             if parsed:
-                                tool_calls_payload = [
-                                    {
-                                        "index": idx,
-                                        "id": f"call_{uuid.uuid4().hex}",
-                                        "type": "function",
-                                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                                    }
-                                    for idx, tc in enumerate(parsed)
-                                ]
-                                yield _sse(_chunk({"tool_calls": tool_calls_payload}))
-                                has_yielded_tool = True
+                                validated = validate_tool_calls(parsed, body.tools)
+                                if validated.valid_calls:
+                                    tool_calls_payload = [
+                                        {
+                                            "index": idx,
+                                            "id": f"call_{uuid.uuid4().hex}",
+                                            "type": "function",
+                                            "function": {"name": tc.name, "arguments": tc.arguments},
+                                        }
+                                        for idx, tc in enumerate(validated.valid_calls)
+                                    ]
+                                    yield _sse(_chunk({"tool_calls": tool_calls_payload}))
+                                    has_yielded_tool = True
+                                elif validated.fallback_text:
+                                    delta = {"content": validated.fallback_text}
+                                    if not yielded_role:
+                                        delta["role"] = "assistant"
+                                        yielded_role = True
+                                    yield _sse(_chunk(delta))
                             text_buffer = ""
                             is_buffering_tool = False
 
                     elif chunk_type == "done":
                         final_text, _reasoning, final_tool_calls, final_finish_reason = parse_assistant_response(
-                            chunk.get("response", "")
+                            chunk.get("response", ""),
+                            tools=body.tools,
                         )
 
                         if final_text and not has_yielded_tool:
@@ -170,7 +180,10 @@ async def chat_completions(
     if STOP_TRUNCATION_ENABLED and body.stop:
         stop_sequences = body.stop if isinstance(body.stop, list) else [body.stop]
         response_text, _ = truncate_at_stop(response_text, stop_sequences)
-    response_text, reasoning, tool_calls, finish_reason = parse_assistant_response(response_text)
+    response_text, reasoning, tool_calls, finish_reason = parse_assistant_response(
+        response_text,
+        tools=body.tools,
+    )
 
     return ChatCompletionResponse(
         id=req_id,

@@ -24,6 +24,7 @@ from app.services.prompt import (
     has_tool_xml_start,
     parse_tool_calls_xml,
 )
+from app.services.tool_validation import validate_tool_calls
 from app.services.translation import compile_messages_to_prompt, get_images_from_messages
 from app.services.translation import extract_text_from_content
 
@@ -233,7 +234,10 @@ def build_tubs_payload_from_response_request(
     )
 
 
-def parse_assistant_response(response_text: str) -> tuple[str, Optional[str], Optional[List[ToolCall]], str]:
+def parse_assistant_response(
+    response_text: str,
+    tools: Optional[Iterable[Any]] = None,
+) -> tuple[str, Optional[str], Optional[List[ToolCall]], str]:
     finish_reason = "stop"
     tool_calls: Optional[List[ToolCall]] = None
 
@@ -242,15 +246,19 @@ def parse_assistant_response(response_text: str) -> tuple[str, Optional[str], Op
     if has_tool_xml_start(response_text):
         parsed = parse_tool_calls_xml(response_text)
         if parsed:
-            tool_calls = [
-                ToolCall(
-                    id=f"call_{uuid.uuid4().hex}",
-                    type="function",
-                    function=ToolCallFunction(name=tc["name"], arguments=tc["arguments"]),
-                )
-                for tc in parsed
-            ]
-            response_text = ""
-            finish_reason = "tool_calls"
+            validated = validate_tool_calls(parsed, tools)
+            if validated.valid_calls:
+                tool_calls = [
+                    ToolCall(
+                        id=f"call_{uuid.uuid4().hex}",
+                        type="function",
+                        function=ToolCallFunction(name=tc.name, arguments=tc.arguments),
+                    )
+                    for tc in validated.valid_calls
+                ]
+                response_text = ""
+                finish_reason = "tool_calls"
+            elif validated.fallback_text:
+                response_text = validated.fallback_text
 
     return response_text, reasoning, tool_calls, finish_reason

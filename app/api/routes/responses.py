@@ -17,6 +17,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.models.responses import ResponseCreateRequest
 from app.services.openai_bridge import build_tubs_payload_from_response_request, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml
+from app.services.tool_validation import validate_tool_calls
 from app.services.tubs_client import async_send_tubs_request
 
 router = APIRouter()
@@ -183,33 +184,59 @@ async def create_response(
                         if is_tool_xml_complete(text_buffer):
                             parsed = parse_tool_calls_xml(text_buffer)
                             if parsed:
-                                has_yielded_tool = True
-                                for tc in parsed:
-                                    tool_item = _response_function_call_item(tc["name"], tc["arguments"])
-                                    completed_items.append(tool_item)
+                                validated = validate_tool_calls(parsed, body.tools)
+                                if validated.valid_calls:
+                                    has_yielded_tool = True
+                                    for tc in validated.valid_calls:
+                                        tool_item = _response_function_call_item(tc.name, tc.arguments)
+                                        completed_items.append(tool_item)
+                                        yield emit(
+                                            "response.output_item.added",
+                                            {
+                                                "response_id": response_id,
+                                                "output_index": output_index,
+                                                "item": tool_item,
+                                            },
+                                        )
+                                        yield emit(
+                                            "response.output_item.done",
+                                            {
+                                                "response_id": response_id,
+                                                "output_index": output_index,
+                                                "item": tool_item,
+                                            },
+                                        )
+                                        output_index += 1
+                                elif validated.fallback_text:
+                                    if not yielded_content:
+                                        yield emit(
+                                            "response.content_part.added",
+                                            {
+                                                "response_id": response_id,
+                                                "output_index": output_index,
+                                                "item_id": text_item_id,
+                                                "content_index": 0,
+                                                "part": {"type": "output_text", "text": "", "annotations": []},
+                                            },
+                                        )
+                                        yielded_content = True
                                     yield emit(
-                                        "response.output_item.added",
+                                        "response.output_text.delta",
                                         {
                                             "response_id": response_id,
                                             "output_index": output_index,
-                                            "item": tool_item,
+                                            "item_id": text_item_id,
+                                            "content_index": 0,
+                                            "delta": validated.fallback_text,
                                         },
                                     )
-                                    yield emit(
-                                        "response.output_item.done",
-                                        {
-                                            "response_id": response_id,
-                                            "output_index": output_index,
-                                            "item": tool_item,
-                                        },
-                                    )
-                                    output_index += 1
                             text_buffer = ""
                             is_buffering_tool = False
 
                     elif chunk_type == "done":
                         final_text, _reasoning, _tool_calls, _finish_reason = parse_assistant_response(
-                            chunk.get("response", "")
+                            chunk.get("response", ""),
+                            tools=body.tools,
                         )
 
                         if yielded_content or final_text:
@@ -281,7 +308,8 @@ async def create_response(
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     output_text, reasoning, tool_calls, _finish_reason = parse_assistant_response(
-        response_or_stream.get("response", "")
+        response_or_stream.get("response", ""),
+        tools=body.tools,
     )
     output_items = []
     if output_text:

@@ -24,6 +24,7 @@ from app.services.model_map import resolve_model
 from app.services.prompt import (
     truncate_at_stop, parse_tool_calls_xml, is_tool_xml_complete, has_tool_xml_start,
 )
+from app.services.tool_validation import validate_tool_calls
 from app.models.tubs import TubsChatRequest
 
 router = APIRouter()
@@ -195,24 +196,31 @@ async def anthropic_messages(
                         elif is_tool_xml_complete(text_buffer):
                             parsed = parse_tool_calls_xml(text_buffer)
                             if parsed:
-                                if text_block_open:
-                                    yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
-                                    text_block_open = False
-                                    content_block_idx += 1
+                                validated = validate_tool_calls(parsed, body.tools)
+                                if validated.valid_calls:
+                                    if text_block_open:
+                                        yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                        text_block_open = False
+                                        content_block_idx += 1
 
-                                for tc in parsed:
-                                    tool_id = f"toolu_{uuid.uuid4().hex}"
-                                    yield _event("content_block_start", {
-                                        "type": "content_block_start", "index": content_block_idx,
-                                        "content_block": {"type": "tool_use", "id": tool_id, "name": tc["name"]},
-                                    })
+                                    for tc in validated.valid_calls:
+                                        tool_id = f"toolu_{uuid.uuid4().hex}"
+                                        yield _event("content_block_start", {
+                                            "type": "content_block_start", "index": content_block_idx,
+                                            "content_block": {"type": "tool_use", "id": tool_id, "name": tc.name},
+                                        })
+                                        yield _event("content_block_delta", {
+                                            "type": "content_block_delta", "index": content_block_idx,
+                                            "delta": {"type": "input_json_delta", "partial_json": tc.arguments},
+                                        })
+                                        yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                        content_block_idx += 1
+                                    has_yielded_tool = True
+                                elif validated.fallback_text:
                                     yield _event("content_block_delta", {
                                         "type": "content_block_delta", "index": content_block_idx,
-                                        "delta": {"type": "input_json_delta", "partial_json": tc["arguments"]},
+                                        "delta": {"type": "text_delta", "text": validated.fallback_text},
                                     })
-                                    yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
-                                    content_block_idx += 1
-                                has_yielded_tool = True
 
                             text_buffer = ""
                             is_buffering_tool = False
@@ -223,23 +231,30 @@ async def anthropic_messages(
                         parsed = parse_tool_calls_xml(final_response) if has_tool_xml_start(final_response) else []
 
                         if parsed and not has_yielded_tool:
-                            if text_block_open:
-                                yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
-                                text_block_open = False
-                                content_block_idx += 1
-                            for tc in parsed:
-                                tool_id = f"toolu_{uuid.uuid4().hex}"
-                                yield _event("content_block_start", {
-                                    "type": "content_block_start", "index": content_block_idx,
-                                    "content_block": {"type": "tool_use", "id": tool_id, "name": tc["name"]},
-                                })
+                            validated = validate_tool_calls(parsed, body.tools)
+                            if validated.valid_calls:
+                                if text_block_open:
+                                    yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                    text_block_open = False
+                                    content_block_idx += 1
+                                for tc in validated.valid_calls:
+                                    tool_id = f"toolu_{uuid.uuid4().hex}"
+                                    yield _event("content_block_start", {
+                                        "type": "content_block_start", "index": content_block_idx,
+                                        "content_block": {"type": "tool_use", "id": tool_id, "name": tc.name},
+                                    })
+                                    yield _event("content_block_delta", {
+                                        "type": "content_block_delta", "index": content_block_idx,
+                                        "delta": {"type": "input_json_delta", "partial_json": tc.arguments},
+                                    })
+                                    yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
+                                    content_block_idx += 1
+                                has_yielded_tool = True
+                            elif validated.fallback_text:
                                 yield _event("content_block_delta", {
                                     "type": "content_block_delta", "index": content_block_idx,
-                                    "delta": {"type": "input_json_delta", "partial_json": tc["arguments"]},
+                                    "delta": {"type": "text_delta", "text": validated.fallback_text},
                                 })
-                                yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
-                                content_block_idx += 1
-                            has_yielded_tool = True
                         elif text_block_open:
                             yield _event("content_block_stop", {"type": "content_block_stop", "index": content_block_idx})
 
@@ -273,18 +288,19 @@ async def anthropic_messages(
     if has_tool_xml_start(response_text):
         parsed = parse_tool_calls_xml(response_text)
         if parsed:
-            for tc in parsed:
-                try:
-                    args_json = json.loads(tc["arguments"])
-                except (json.JSONDecodeError, TypeError):
-                    args_json = {}
-                content_blocks.append(ToolUseContentBlock(
-                    type="tool_use",
-                    id=f"toolu_{uuid.uuid4().hex}",
-                    name=tc["name"],
-                    input=args_json,
-                ))
-            stop_reason = "tool_use"
+            validated = validate_tool_calls(parsed, body.tools)
+            if validated.valid_calls:
+                for tc in validated.valid_calls:
+                    args_json = json.loads(tc.arguments)
+                    content_blocks.append(ToolUseContentBlock(
+                        type="tool_use",
+                        id=f"toolu_{uuid.uuid4().hex}",
+                        name=tc.name,
+                        input=args_json,
+                    ))
+                stop_reason = "tool_use"
+            elif validated.fallback_text:
+                content_blocks.append(TextContentBlock(type="text", text=validated.fallback_text))
         elif response_text:
             content_blocks.append(TextContentBlock(type="text", text=response_text))
     elif response_text:
