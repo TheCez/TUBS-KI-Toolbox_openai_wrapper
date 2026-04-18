@@ -1,6 +1,8 @@
 from app.services.conversation_state import (
+    build_prompt_with_compaction,
     build_conversation_key,
     compact_messages,
+    estimate_token_count,
     get_cached_thread_id,
     remember_thread_id,
     reset_thread_cache,
@@ -86,3 +88,54 @@ def test_thread_cache_uses_redis_backend_when_configured(monkeypatch):
 
     remember_thread_id(conversation_key, {"thread": {"id": "thread_xyz"}})
     assert get_cached_thread_id(conversation_key) == "thread_xyz"
+
+
+def test_build_prompt_with_compaction_uses_thread_budget_and_keeps_latest_request(monkeypatch):
+    monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "4")
+    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "200")
+    monkeypatch.setenv("TUBS_THREAD_PROMPT_TOKENS", "40")
+    monkeypatch.setenv("TUBS_THREAD_SUMMARY_CHARS", "120")
+
+    messages = [
+        {"role": "user", "content": "First request " + ("alpha " * 30)},
+        {"role": "assistant", "content": "First answer " + ("beta " * 20)},
+        {"role": "user", "content": "Second request " + ("gamma " * 20)},
+        {"role": "assistant", "content": "Second answer " + ("delta " * 20)},
+        {"role": "user", "content": "Latest request with the exact task we must preserve."},
+    ]
+
+    prompt = build_prompt_with_compaction(
+        messages,
+        compile_prompt=lambda items: "\n".join(
+            f"[{item['role'].capitalize()}]: {item['content']}" for item in items if item["role"] != "system"
+        ),
+        thread_id="thread_123",
+    )
+
+    assert "Latest request with the exact task we must preserve." in prompt
+    assert estimate_token_count(prompt) <= 40
+    assert "First request alpha" not in prompt
+
+
+def test_build_prompt_with_compaction_summarizes_older_messages_without_thread(monkeypatch):
+    monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "2")
+    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "80")
+    monkeypatch.setenv("TUBS_COMPACT_SUMMARY_CHARS", "220")
+
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Old request with setup."},
+        {"role": "assistant", "content": "Old reply."},
+        {"role": "user", "content": "Newest request."},
+    ]
+
+    prompt = build_prompt_with_compaction(
+        messages,
+        compile_prompt=lambda items: "\n".join(
+            f"[{item['role'].capitalize()}]: {item['content']}" for item in items if item["role"] != "system"
+        ),
+        thread_id=None,
+    )
+
+    assert "Earlier conversation summary:" in prompt
+    assert "Newest request." in prompt

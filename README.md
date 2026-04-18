@@ -14,6 +14,7 @@ With this wrapper, any client, agentic framework, or application that expects an
 - **Vision Support:** Complete support for base64 encoded multipart image messages in OpenAI and Anthropic format.
 - **Extensive Parity:** Context mapping and proper formatting for standard clients.
 - **Backpressure Controls:** Optional wrapper-side concurrency and pacing limits to protect the TU-BS upstream from bursty agents such as Claude Code.
+- **Thread-Aware Context Compaction:** Reuses TU-BS threads while shrinking each outbound prompt to a controlled working set so clients with large histories can stay inside tight upstream token limits.
 
 ## Getting Started
 
@@ -43,6 +44,33 @@ environment:
 - `TUBS_MAX_CONCURRENT_REQUESTS` limits how many upstream TU-BS requests may be active at once across the wrapper.
 - `TUBS_MIN_REQUEST_INTERVAL_SECONDS` enforces a minimum delay between the start of outbound TU-BS requests.
 - For aggressive agents, start with `1` concurrent request and `0.5` to `1.0` seconds spacing.
+
+### Thread-Aware Context Budgeting
+
+If your upstream TU-BS deployment has a hard per-request limit such as `10k` prompt tokens, the wrapper can keep requests small while still preserving longer conversations through TU-BS thread reuse.
+
+```yaml
+environment:
+  - TUBS_MAX_PROMPT_TOKENS=9000
+  - TUBS_THREAD_PROMPT_TOKENS=3000
+  - TUBS_KEEP_LAST_TURNS=8
+  - TUBS_COMPACT_SUMMARY_CHARS=4000
+  - TUBS_THREAD_SUMMARY_CHARS=1200
+  - TUBS_APPROX_CHARS_PER_TOKEN=4
+```
+
+- `TUBS_MAX_PROMPT_TOKENS` is the approximate prompt budget for requests that do not yet have a cached TU-BS thread.
+- `TUBS_THREAD_PROMPT_TOKENS` is the smaller working-set budget used once the wrapper can rely on an existing TU-BS thread.
+- `TUBS_KEEP_LAST_TURNS` controls how many recent non-system messages are preserved before older context is compacted.
+- `TUBS_COMPACT_SUMMARY_CHARS` controls how much room is available for stateless summary replay.
+- `TUBS_THREAD_SUMMARY_CHARS` controls the compact bridge summary size when a TU-BS thread already exists.
+- `TUBS_APPROX_CHARS_PER_TOKEN` is the coarse estimator used for budget enforcement.
+
+For a `10k` upstream cap, the shipped defaults are a good starting point:
+- first request: up to about `9k` prompt tokens
+- follow-up requests on the same TU-BS thread: up to about `3k` prompt tokens plus compacted bridge context
+
+This keeps the latest task intact, avoids blunt truncation, and leans on TU-BS thread history for the older conversation state.
 
 ### 2. Python Demo: Connecting via the `openai` module
 

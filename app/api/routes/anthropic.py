@@ -17,9 +17,8 @@ from app.models.anthropic import (
 from app.models.responses import ResponseReasoningConfig
 from app.services.conversation_state import (
     build_conversation_key,
-    compact_messages,
+    build_prompt_with_compaction,
     get_cached_thread_id,
-    prepend_summary_to_prompt,
     remember_thread_id,
 )
 from app.services.anthropic_translation import (
@@ -97,12 +96,12 @@ async def anthropic_messages(
         messages=body.messages,
     )
     thread_id = get_cached_thread_id(conversation_key)
-    compacted_messages, history_summary = compact_messages(body.messages)
-    prompt_string = prepend_summary_to_prompt(
-        compile_anthropic_messages_to_prompt(compacted_messages),
-        history_summary,
+    prompt_string = build_prompt_with_compaction(
+        body.messages,
+        compile_prompt=compile_anthropic_messages_to_prompt,
+        thread_id=thread_id,
     )
-    images = get_images_from_anthropic_messages(compacted_messages)
+    images = get_images_from_anthropic_messages(body.messages)
 
     system_messages = []
     if body.system:

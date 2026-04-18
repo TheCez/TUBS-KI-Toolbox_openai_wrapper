@@ -277,8 +277,10 @@ async def test_chat_completions_downgrades_invalid_tool_call_to_text(monkeypatch
 @pytest.mark.asyncio
 async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypatch):
     reset_thread_cache()
-    monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "2")
+    monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "4")
     monkeypatch.setenv("TUBS_COMPACT_SUMMARY_CHARS", "1000")
+    monkeypatch.setenv("TUBS_THREAD_PROMPT_TOKENS", "40")
+    monkeypatch.setenv("TUBS_THREAD_SUMMARY_CHARS", "120")
 
     call_count = {"value": 0}
 
@@ -296,8 +298,8 @@ async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypa
             }
 
         assert payload.get("thread") == "thread_123"
-        assert "Earlier conversation summary:" in payload["prompt"]
         assert "[User]: Latest request" in payload["prompt"]
+        assert "[User]: Initial request" not in payload["prompt"]
         return {
             "type": "done",
             "response": "Second answer",
