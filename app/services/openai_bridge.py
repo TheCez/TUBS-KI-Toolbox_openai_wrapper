@@ -17,6 +17,7 @@ from app.models.responses import (
     ResponseShorthandInputMessage,
 )
 from app.models.tubs import TubsChatRequest
+from app.services.conversation_state import compact_messages, prepend_summary_to_prompt
 from app.services.model_map import resolve_model
 from app.services.prompt import (
     build_tool_instructions,
@@ -192,6 +193,7 @@ def build_tubs_payload_from_messages(
     *,
     model: Any,
     messages: Sequence[Message],
+    thread_id: Optional[str] = None,
     instructions: Optional[str] = None,
     response_format: Optional[dict[str, Any]] = None,
     tools: Optional[Iterable[Any]] = None,
@@ -199,9 +201,13 @@ def build_tubs_payload_from_messages(
     max_output_tokens: Optional[int] = None,
     tool_choice: Optional[str | dict[str, Any] | ResponseFunctionToolChoice] = None,
 ) -> tuple[dict[str, Any], list[tuple[str, bytes, str]], str]:
+    compacted_messages, history_summary = compact_messages(list(messages))
     payload = TubsChatRequest(
-        thread=None,
-        prompt=compile_messages_to_prompt(list(messages)),
+        thread=thread_id,
+        prompt=prepend_summary_to_prompt(
+            compile_messages_to_prompt(compacted_messages),
+            history_summary,
+        ),
         model=resolve_model(model),
         customInstructions=build_custom_instructions(
             messages=messages,
@@ -219,12 +225,15 @@ def build_tubs_payload_from_messages(
 
 def build_tubs_payload_from_response_request(
     body: ResponseCreateRequest,
+    *,
+    thread_id: Optional[str] = None,
 ) -> tuple[dict[str, Any], list[tuple[str, bytes, str]], str]:
     messages = _response_input_to_messages(body.input)
     response_format = body.text.format if body.text and body.text.format else None
     return build_tubs_payload_from_messages(
         model=body.model,
         messages=messages,
+        thread_id=thread_id,
         instructions=body.instructions,
         response_format=response_format,
         tools=body.tools,

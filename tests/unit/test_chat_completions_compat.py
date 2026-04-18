@@ -2,6 +2,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.services.conversation_state import reset_thread_cache
 
 
 async def _collect_sse_chunks(response) -> list[str]:
@@ -271,3 +272,66 @@ async def test_chat_completions_downgrades_invalid_tool_call_to_text(monkeypatch
     assert data["choices"][0]["finish_reason"] == "stop"
     assert data["choices"][0]["message"]["tool_calls"] is None
     assert "missing required fields: questions" in data["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypatch):
+    reset_thread_cache()
+    monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "2")
+    monkeypatch.setenv("TUBS_COMPACT_SUMMARY_CHARS", "1000")
+
+    call_count = {"value": 0}
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            assert payload.get("thread") is None
+            return {
+                "type": "done",
+                "response": "First answer",
+                "promptTokens": 4,
+                "responseTokens": 2,
+                "totalTokens": 6,
+                "thread": {"id": "thread_123"},
+            }
+
+        assert payload.get("thread") == "thread_123"
+        assert "Earlier conversation summary:" in payload["prompt"]
+        assert "[User]: Latest request" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Second answer",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+            "thread": {"id": "thread_123"},
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        first = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "Initial request"}],
+            },
+        )
+        second = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [
+                    {"role": "user", "content": "Initial request"},
+                    {"role": "assistant", "content": "Initial answer"},
+                    {"role": "user", "content": "Follow-up request"},
+                    {"role": "assistant", "content": "Follow-up answer"},
+                    {"role": "user", "content": "Latest request"},
+                ],
+            },
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200

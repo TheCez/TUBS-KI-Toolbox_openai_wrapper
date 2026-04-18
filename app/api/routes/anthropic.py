@@ -15,6 +15,13 @@ from app.models.anthropic import (
     TextContentBlock, ToolUseContentBlock, ToolChoice,
 )
 from app.models.responses import ResponseReasoningConfig
+from app.services.conversation_state import (
+    build_conversation_key,
+    compact_messages,
+    get_cached_thread_id,
+    prepend_summary_to_prompt,
+    remember_thread_id,
+)
 from app.services.anthropic_translation import (
     compile_anthropic_messages_to_prompt, get_images_from_anthropic_messages,
 )
@@ -84,8 +91,18 @@ async def anthropic_messages(
     body: MessageRequest,
     token: str = Depends(get_anthropic_token),
 ):
-    prompt_string = compile_anthropic_messages_to_prompt(body.messages)
-    images = get_images_from_anthropic_messages(body.messages)
+    conversation_key = build_conversation_key(
+        bearer_token=token,
+        model=body.model,
+        messages=body.messages,
+    )
+    thread_id = get_cached_thread_id(conversation_key)
+    compacted_messages, history_summary = compact_messages(body.messages)
+    prompt_string = prepend_summary_to_prompt(
+        compile_anthropic_messages_to_prompt(compacted_messages),
+        history_summary,
+    )
+    images = get_images_from_anthropic_messages(compacted_messages)
 
     system_messages = []
     if body.system:
@@ -104,7 +121,7 @@ async def anthropic_messages(
     )
 
     tubs_payload = TubsChatRequest(
-        thread=None,
+        thread=thread_id,
         prompt=prompt_string,
         model=resolve_model(body.model),
         customInstructions=custom_instructions,
@@ -226,6 +243,7 @@ async def anthropic_messages(
                             is_buffering_tool = False
 
                     elif chunk_type == "done":
+                        remember_thread_id(conversation_key, chunk)
                         output_tokens = chunk.get("responseTokens", 0)
                         final_response = chunk.get("response", "")
                         parsed = parse_tool_calls_xml(final_response) if has_tool_xml_start(final_response) else []
@@ -274,6 +292,7 @@ async def anthropic_messages(
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     response_text = response_or_stream.get("response", "")
+    remember_thread_id(conversation_key, response_or_stream)
     p_tokens = response_or_stream.get("promptTokens", 0)
     c_tokens = response_or_stream.get("responseTokens", 0)
 

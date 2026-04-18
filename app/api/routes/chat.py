@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.openai import ChatCompletionRequest, ChatCompletionResponse, ChoiceNonStreaming, Message, Usage
+from app.services.conversation_state import build_conversation_key, get_cached_thread_id, remember_thread_id
 from app.services.openai_bridge import build_tubs_payload_from_messages, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml, truncate_at_stop
 from app.services.tool_validation import validate_tool_calls
@@ -31,9 +32,17 @@ async def chat_completions(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     token = credentials.credentials
+    conversation_key = build_conversation_key(
+        bearer_token=token,
+        model=str(body.model.value) if hasattr(body.model, "value") else str(body.model),
+        messages=body.messages,
+        explicit_user=body.user,
+    )
+    thread_id = get_cached_thread_id(conversation_key)
     tubs_payload, images, model_str = build_tubs_payload_from_messages(
         model=body.model,
         messages=body.messages,
+        thread_id=thread_id,
         response_format=body.response_format,
         tools=body.tools,
         max_output_tokens=body.max_completion_tokens or body.max_tokens,
@@ -132,6 +141,7 @@ async def chat_completions(
                             is_buffering_tool = False
 
                     elif chunk_type == "done":
+                        remember_thread_id(conversation_key, chunk)
                         final_text, _reasoning, final_tool_calls, final_finish_reason = parse_assistant_response(
                             chunk.get("response", ""),
                             tools=body.tools,
@@ -173,6 +183,7 @@ async def chat_completions(
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     response_text = response_or_stream.get("response", "")
+    remember_thread_id(conversation_key, response_or_stream)
     p_tokens = response_or_stream.get("promptTokens", 0)
     c_tokens = response_or_stream.get("responseTokens", 0)
     t_tokens = response_or_stream.get("totalTokens", 0)

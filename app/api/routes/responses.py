@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.responses import ResponseCreateRequest
+from app.services.conversation_state import build_conversation_key, get_cached_thread_id, remember_thread_id
 from app.services.openai_bridge import build_tubs_payload_from_response_request, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml
 from app.services.tool_validation import validate_tool_calls
@@ -81,7 +82,15 @@ async def create_response(
         logger.info("Incoming request path=%s headers=%s", request.url.path, sanitized_headers)
 
     token = credentials.credentials
-    payload, images, model_str = build_tubs_payload_from_response_request(body)
+    conversation_messages = body.input if isinstance(body.input, list) else [{"role": "user", "content": body.input}]
+    conversation_key = build_conversation_key(
+        bearer_token=token,
+        model=str(body.model),
+        messages=conversation_messages,
+        explicit_user=body.user,
+    )
+    thread_id = get_cached_thread_id(conversation_key)
+    payload, images, model_str = build_tubs_payload_from_response_request(body, thread_id=thread_id)
 
     response_or_stream = await async_send_tubs_request(
         payload=payload,
@@ -234,6 +243,7 @@ async def create_response(
                             is_buffering_tool = False
 
                     elif chunk_type == "done":
+                        remember_thread_id(conversation_key, chunk)
                         final_text, _reasoning, _tool_calls, _finish_reason = parse_assistant_response(
                             chunk.get("response", ""),
                             tools=body.tools,
@@ -311,6 +321,7 @@ async def create_response(
         response_or_stream.get("response", ""),
         tools=body.tools,
     )
+    remember_thread_id(conversation_key, response_or_stream)
     output_items = []
     if output_text:
         output_items.append(_response_output_message(output_text))
