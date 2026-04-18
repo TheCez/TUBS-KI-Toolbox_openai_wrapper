@@ -3,6 +3,7 @@ import json
 import uuid
 from typing import Tuple, List, Optional, Any, Iterable
 from app.models.openai import Message, ContentPartImage
+from app.services.tool_error_guidance import guidance_for_tool_errors
 
 TEXT_BLOCK_TYPES = {"text", "input_text", "output_text"}
 TOOL_RESULT_BLOCK_TYPES = {"tool_result", "function_call_output"}
@@ -126,6 +127,7 @@ def compile_messages_to_prompt(messages: List[Message]) -> str:
     This mimics how a stateless LLM receives conversation history.
     """
     compiled_prompt = ""
+    deferred_hints: list[str] = []
     for msg in messages:
         if msg.role.lower() in ["system", "developer"]:
             continue
@@ -151,11 +153,18 @@ def compile_messages_to_prompt(messages: List[Message]) -> str:
             compiled_prompt += "[Assistant Tool Calls]: " + "; ".join(tool_lines) + "\n"
 
         content_text = extract_text_from_content(msg.content)
+        tool_results = extract_tool_results_from_content(msg.content)
         if msg.role.lower() != "tool" and has_tool_result_blocks(msg.content):
             role = "Tool Result"
+        if msg.role.lower() == "tool":
+            tool_results = [{"id": getattr(msg, "tool_call_id", ""), "text": content_text, "is_error": False, "type": "tool"}]
 
         if content_text:
             compiled_prompt += f"[{role}]: {content_text.strip()}\n"
+        deferred_hints.extend(guidance_for_tool_errors(tool_results))
+
+    for hint in dict.fromkeys(deferred_hints):
+        compiled_prompt += f"[Wrapper Repair Hint]: {hint}\n"
             
     # Remove the very last newline if exists
     return compiled_prompt.strip()

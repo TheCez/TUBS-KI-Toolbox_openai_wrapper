@@ -220,6 +220,47 @@ async def test_anthropic_prompt_marks_tool_result_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anthropic_adds_repair_hint_for_string_replace_errors(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Wrapper repair hint:" in payload["prompt"]
+        assert "Read the file again before editing" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Retry with a reread.",
+            "promptTokens": 6,
+            "responseTokens": 3,
+            "totalTokens": 9,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_1",
+                                "content": "Error: String to replace not found in file.",
+                                "is_error": True,
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "Try again."},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_anthropic_accepts_block_extras_and_function_call_output_shapes(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "[User]: Hello from block content" in payload["prompt"]

@@ -54,6 +54,7 @@ def _content_item_to_message_part(item: Any) -> Optional[dict]:
                 "content": item.get("content", item.get("output", "")),
                 "tool_use_id": item.get("tool_use_id"),
                 "call_id": item.get("call_id"),
+                "is_error": item.get("is_error"),
             }
         if item_type in {"tool_use", "function_call"}:
             return item

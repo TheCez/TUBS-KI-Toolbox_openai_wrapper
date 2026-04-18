@@ -191,6 +191,48 @@ async def test_chat_completions_accepts_tool_blocks_inside_content(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_adds_repair_hint_for_string_replace_errors(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Wrapper repair hint:" in payload["prompt"]
+        assert "Read the file again before editing" in payload["prompt"]
+        assert "smaller anchored replacements" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Try a smaller anchored edit.",
+            "promptTokens": 8,
+            "responseTokens": 4,
+            "totalTokens": 12,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_1",
+                                "content": "Error: String to replace not found in file.",
+                                "is_error": True,
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "Try again."},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_streaming_hides_tool_xml(monkeypatch):
     async def fake_stream():
         yield {

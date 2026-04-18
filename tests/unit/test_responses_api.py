@@ -122,6 +122,47 @@ async def test_responses_accepts_lobechat_tool_loop_items(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_responses_adds_repair_hint_for_string_replace_errors(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Wrapper repair hint:" in payload["prompt"]
+        assert "smaller anchored replacements" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Retry after rereading.",
+            "promptTokens": 3,
+            "responseTokens": 2,
+            "totalTokens": 5,
+        }
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_1",
+                                "content": "Error: String to replace not found in file.",
+                                "is_error": True,
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "Try again."},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_responses_accepts_content_blocks_with_extra_fields(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "Use the configured skills." in payload["customInstructions"]

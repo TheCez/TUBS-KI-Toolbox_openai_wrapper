@@ -1,6 +1,7 @@
 import base64
 import uuid
 from typing import Tuple, List, Any, Optional
+from app.services.tool_error_guidance import guidance_for_tool_errors
 from app.models.anthropic import Message
 from app.services.translation import (
     extract_text_from_content,
@@ -11,6 +12,7 @@ from app.services.translation import (
 
 def compile_anthropic_messages_to_prompt(messages: List[Message]) -> str:
     compiled_prompt = ""
+    deferred_hints: list[str] = []
     for msg in messages:
         role = msg.role.capitalize()
 
@@ -32,11 +34,15 @@ def compile_anthropic_messages_to_prompt(messages: List[Message]) -> str:
                 if tool_result["text"]:
                     compiled_prompt += f"[Tool Result {marker}{tool_id}]: {tool_result['text'].strip()}\n"
             content_text = ""
+            deferred_hints.extend(guidance_for_tool_errors(tool_results))
         elif has_tool_result_blocks(msg.content):
             role = "Tool Result"
 
         if content_text:
             compiled_prompt += f"[{role}]: {content_text.strip()}\n"
+
+    for hint in dict.fromkeys(deferred_hints):
+        compiled_prompt += f"[Wrapper Repair Hint]: {hint}\n"
 
     return compiled_prompt.strip()
 
