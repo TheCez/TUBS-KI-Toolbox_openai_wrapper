@@ -6,7 +6,7 @@ Centralizes tool-calling instructions, stop-sequence truncation, and XML parsing
 import re
 import json
 import uuid
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 
 # Compiled once, reused everywhere
@@ -19,6 +19,56 @@ TOOL_CALLS_CLOSE_REGEX = re.compile(r'<\\?/tool_calls>')
 TOOL_CALL_CLOSE_REGEX = re.compile(r'<\\?/tool_call>')
 
 THOUGHT_REGEX = re.compile(r'<thought>(.*?)</thought>', re.DOTALL)
+
+
+def _tool_schema_for_prompt(tool: dict[str, Any]) -> dict[str, Any]:
+    if tool.get("input_schema") and isinstance(tool["input_schema"], dict):
+        return tool["input_schema"]
+    if tool.get("function") and isinstance(tool["function"], dict):
+        return tool["function"].get("parameters", {}) or {}
+    return tool.get("parameters", {}) or {}
+
+
+def _tool_name_for_prompt(tool: dict[str, Any]) -> str:
+    if tool.get("name"):
+        return str(tool["name"])
+    if tool.get("function") and isinstance(tool["function"], dict):
+        return str(tool["function"].get("name", "unknown_tool"))
+    return "unknown_tool"
+
+
+def _tool_description_for_prompt(tool: dict[str, Any]) -> str:
+    if tool.get("description"):
+        return str(tool["description"])
+    if tool.get("function") and isinstance(tool["function"], dict):
+        return str(tool["function"].get("description", "") or "")
+    return ""
+
+
+def _format_tool_requirements(tools_dicts: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for tool in tools_dicts:
+        name = _tool_name_for_prompt(tool)
+        description = _tool_description_for_prompt(tool)
+        schema = _tool_schema_for_prompt(tool)
+        required = schema.get("required", []) if isinstance(schema, dict) else []
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+
+        line = f"- {name}"
+        if description:
+            line += f": {description}"
+        lines.append(line)
+
+        if required:
+            lines.append(f"  Required arguments: {', '.join(str(item) for item in required)}")
+        else:
+            lines.append("  Required arguments: none")
+
+        if isinstance(properties, dict) and properties:
+            property_names = ", ".join(str(key) for key in properties.keys())
+            lines.append(f"  Available arguments: {property_names}")
+
+    return "\n".join(lines)
 
 
 def build_tool_instructions(tools: list) -> str:
@@ -35,6 +85,7 @@ def build_tool_instructions(tools: list) -> str:
             tools_dicts.append(t)
 
     tools_str = json.dumps(tools_dicts)
+    tools_summary = _format_tool_requirements(tools_dicts)
     return (
         "You have access to the tools provided in the current request. "
         "To use any tool, you MUST follow this XML format. If you need to trigger "
@@ -59,6 +110,12 @@ def build_tool_instructions(tools: list) -> str:
         '3. Your output must contain ONLY the XML blocks. No conversational filler '
         'like "Here is your code" before or after the <tool_calls> tag, as this '
         "can confuse the client parser.\n"
+        "4. Never call a tool with an empty or incomplete arguments object when the "
+        "schema requires fields. If you do not have the required arguments, do not "
+        "call the tool yet.\n"
+        "5. Match the argument keys exactly to the schema. Do not rename keys, wrap "
+        "them in extra objects, or omit required arrays/objects.\n"
+        f"Tool requirements summary:\n{tools_summary}\n"
         f"Available tools: {tools_str}\n"
     )
 
