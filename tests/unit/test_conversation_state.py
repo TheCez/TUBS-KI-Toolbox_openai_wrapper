@@ -139,3 +139,28 @@ def test_build_prompt_with_compaction_summarizes_older_messages_without_thread(m
 
     assert "Earlier conversation summary:" in prompt
     assert "Newest request." in prompt
+
+
+def test_build_prompt_with_compaction_iteratively_folds_old_blocks(monkeypatch):
+    monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "2")
+    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "70")
+    monkeypatch.setenv("TUBS_THREAD_PROMPT_TOKENS", "70")
+    monkeypatch.setenv("TUBS_THREAD_SUMMARY_CHARS", "260")
+
+    messages = []
+    for idx in range(1, 9):
+        messages.append({"role": "user", "content": f"Request {idx} " + ("detail " * 18)})
+        messages.append({"role": "assistant", "content": f"Reply {idx} " + ("response " * 16)})
+    messages.append({"role": "user", "content": "Final request that must remain intact."})
+
+    prompt = build_prompt_with_compaction(
+        messages,
+        compile_prompt=lambda items: "\n".join(
+            f"[{item['role'].capitalize()}]: {item['content']}" for item in items if item["role"] != "system"
+        ),
+        thread_id="thread_rollup",
+    )
+
+    assert "Final request that must remain intact." in prompt
+    assert estimate_token_count(prompt) <= 70
+    assert "Request 1 detail" not in prompt
