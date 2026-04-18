@@ -1,6 +1,6 @@
 import base64
 import uuid
-from typing import Tuple, List, Any
+from typing import Tuple, List, Any, Optional
 from app.models.anthropic import Message
 from app.services.translation import extract_text_from_content, extract_tool_calls_from_content, has_tool_result_blocks
 
