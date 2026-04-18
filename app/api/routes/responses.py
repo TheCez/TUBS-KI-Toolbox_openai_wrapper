@@ -16,8 +16,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.responses import ResponseCreateRequest
 from app.services.conversation_state import build_conversation_key, get_cached_thread_id, remember_thread_id
-from app.services.openai_bridge import build_tubs_payload_from_response_request, parse_assistant_response
+from app.services.openai_bridge import (
+    build_tubs_payload_from_messages,
+    parse_assistant_response,
+    response_input_to_messages,
+)
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml
+from app.services.staged_ingestion import prepare_staged_messages
 from app.services.tool_validation import validate_tool_calls
 from app.services.tubs_client import async_send_tubs_request
 
@@ -90,7 +95,26 @@ async def create_response(
         explicit_user=body.user,
     )
     thread_id = get_cached_thread_id(conversation_key)
-    payload, images, model_str = build_tubs_payload_from_response_request(body, thread_id=thread_id)
+    normalized_messages = response_input_to_messages(body.input)
+    staged = await prepare_staged_messages(
+        model=body.model,
+        messages=normalized_messages,
+        thread_id=thread_id,
+        conversation_key=conversation_key,
+        bearer_token=token,
+    )
+    response_format = body.text.format if body.text and body.text.format else None
+    payload, images, model_str = build_tubs_payload_from_messages(
+        model=body.model,
+        messages=staged.messages,
+        thread_id=staged.thread_id,
+        instructions=body.instructions,
+        response_format=response_format,
+        tools=body.tools,
+        reasoning=body.reasoning,
+        max_output_tokens=body.max_output_tokens,
+        tool_choice=body.tool_choice,
+    )
 
     response_or_stream = await async_send_tubs_request(
         payload=payload,

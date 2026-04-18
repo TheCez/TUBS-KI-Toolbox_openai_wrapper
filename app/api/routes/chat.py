@@ -16,6 +16,7 @@ from app.models.openai import ChatCompletionRequest, ChatCompletionResponse, Cho
 from app.services.conversation_state import build_conversation_key, get_cached_thread_id, remember_thread_id
 from app.services.openai_bridge import build_tubs_payload_from_messages, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml, truncate_at_stop
+from app.services.staged_ingestion import prepare_staged_messages
 from app.services.tool_validation import validate_tool_calls
 from app.services.tubs_client import async_send_tubs_request
 
@@ -39,9 +40,17 @@ async def chat_completions(
         explicit_user=body.user,
     )
     thread_id = get_cached_thread_id(conversation_key)
-    tubs_payload, images, model_str = build_tubs_payload_from_messages(
+    staged = await prepare_staged_messages(
         model=body.model,
         messages=body.messages,
+        thread_id=thread_id,
+        conversation_key=conversation_key,
+        bearer_token=token,
+    )
+    thread_id = staged.thread_id
+    tubs_payload, images, model_str = build_tubs_payload_from_messages(
+        model=body.model,
+        messages=staged.messages,
         thread_id=thread_id,
         response_format=body.response_format,
         tools=body.tools,

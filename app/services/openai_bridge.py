@@ -60,7 +60,7 @@ def _content_item_to_message_part(item: Any) -> Optional[dict]:
     return None
 
 
-def _response_input_to_messages(input_value: str | List[Any]) -> List[Message]:
+def response_input_to_messages(input_value: str | List[Any]) -> List[Message]:
     if isinstance(input_value, str):
         return [Message(role="user", content=input_value)]
 
@@ -228,7 +228,7 @@ def build_tubs_payload_from_response_request(
     *,
     thread_id: Optional[str] = None,
 ) -> tuple[dict[str, Any], list[tuple[str, bytes, str]], str]:
-    messages = _response_input_to_messages(body.input)
+    messages = response_input_to_messages(body.input)
     response_format = body.text.format if body.text and body.text.format else None
     return build_tubs_payload_from_messages(
         model=body.model,

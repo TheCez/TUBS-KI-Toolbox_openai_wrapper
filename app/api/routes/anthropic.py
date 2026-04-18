@@ -26,6 +26,7 @@ from app.services.anthropic_translation import (
 )
 from app.services.openai_bridge import build_custom_instructions
 from app.services.tubs_client import async_send_tubs_request
+from app.services.staged_ingestion import prepare_staged_messages
 from app.services.model_map import resolve_model
 from app.services.prompt import (
     truncate_at_stop, parse_tool_calls_xml, is_tool_xml_complete, has_tool_xml_start,
@@ -96,12 +97,19 @@ async def anthropic_messages(
         messages=body.messages,
     )
     thread_id = get_cached_thread_id(conversation_key)
-    prompt_string = build_prompt_with_compaction(
-        body.messages,
-        compile_prompt=compile_anthropic_messages_to_prompt,
+    staged = await prepare_staged_messages(
+        model=body.model,
+        messages=body.messages,
         thread_id=thread_id,
+        conversation_key=conversation_key,
+        bearer_token=token,
     )
-    images = get_images_from_anthropic_messages(body.messages)
+    prompt_string = build_prompt_with_compaction(
+        staged.messages,
+        compile_prompt=compile_anthropic_messages_to_prompt,
+        thread_id=staged.thread_id,
+    )
+    images = get_images_from_anthropic_messages(staged.messages)
 
     system_messages = []
     if body.system:
@@ -120,7 +128,7 @@ async def anthropic_messages(
     )
 
     tubs_payload = TubsChatRequest(
-        thread=thread_id,
+        thread=staged.thread_id,
         prompt=prompt_string,
         model=resolve_model(body.model),
         customInstructions=custom_instructions,
