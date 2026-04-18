@@ -78,7 +78,7 @@ async def test_anthropic_accepts_context_management(monkeypatch):
 async def test_anthropic_prompt_includes_tool_history(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "[Tool Intention]:" in payload["prompt"]
-        assert "[Tool Result]: sunny" in payload["prompt"]
+        assert "[Tool Result OK id=toolu_1]: sunny" in payload["prompt"]
         return {
             "type": "done",
             "response": "Final answer",
@@ -122,11 +122,62 @@ async def test_anthropic_prompt_includes_tool_history(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anthropic_prompt_marks_tool_result_errors(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "[Tool Result ERROR id=toolu_1]: Error writing file" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "I could not write the file",
+            "promptTokens": 6,
+            "responseTokens": 3,
+            "totalTokens": 9,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "write_file",
+                                "input": {"path": "src/app.ts", "content": "hello"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_1",
+                                "content": "Error writing file",
+                                "is_error": True,
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "I could not write the file"
+
+
+@pytest.mark.asyncio
 async def test_anthropic_accepts_block_extras_and_function_call_output_shapes(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "[User]: Hello from block content" in payload["prompt"]
         assert "[Tool Intention]: search({\"query\": \"latest\"}) [id=call_1]" in payload["prompt"]
-        assert "[Tool Result]: done" in payload["prompt"]
+        assert "[Tool Result OK id=call_1]: done" in payload["prompt"]
         return {
             "type": "done",
             "response": "Summarized",

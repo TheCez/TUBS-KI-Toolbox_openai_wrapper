@@ -2,7 +2,12 @@ import base64
 import uuid
 from typing import Tuple, List, Any, Optional
 from app.models.anthropic import Message
-from app.services.translation import extract_text_from_content, extract_tool_calls_from_content, has_tool_result_blocks
+from app.services.translation import (
+    extract_text_from_content,
+    extract_tool_calls_from_content,
+    extract_tool_results_from_content,
+    has_tool_result_blocks,
+)
 
 def compile_anthropic_messages_to_prompt(messages: List[Message]) -> str:
     compiled_prompt = ""
@@ -18,7 +23,16 @@ def compile_anthropic_messages_to_prompt(messages: List[Message]) -> str:
             compiled_prompt += "[Tool Intention]: " + "; ".join(tool_lines) + "\n"
 
         content_text = extract_text_from_content(msg.content)
-        if has_tool_result_blocks(msg.content):
+        tool_results = extract_tool_results_from_content(msg.content)
+        if tool_results:
+            role = "Tool Result"
+            for tool_result in tool_results:
+                marker = "ERROR" if tool_result["is_error"] else "OK"
+                tool_id = f" id={tool_result['id']}" if tool_result["id"] else ""
+                if tool_result["text"]:
+                    compiled_prompt += f"[Tool Result {marker}{tool_id}]: {tool_result['text'].strip()}\n"
+            content_text = ""
+        elif has_tool_result_blocks(msg.content):
             role = "Tool Result"
 
         if content_text:

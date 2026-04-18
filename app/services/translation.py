@@ -67,6 +67,10 @@ def extract_text_from_content(content: Any) -> str:
             nested_text = _extract_text_from_content_value(nested)
             if nested_text:
                 parts.append(nested_text)
+        elif isinstance(part_dict.get("text"), str) and part_dict.get("text"):
+            parts.append(part_dict["text"])
+        elif isinstance(part_dict.get("content"), str) and part_dict.get("content"):
+            parts.append(part_dict["content"])
 
     return "\n".join(parts).strip()
 
@@ -96,6 +100,24 @@ def extract_tool_calls_from_content(content: Any) -> List[dict]:
 
 def has_tool_result_blocks(content: Any) -> bool:
     return any(part_dict.get("type") in TOOL_RESULT_BLOCK_TYPES for part_dict in iter_content_dicts(content))
+
+
+def extract_tool_results_from_content(content: Any) -> List[dict]:
+    results = []
+    for part_dict in iter_content_dicts(content):
+        part_type = part_dict.get("type")
+        if part_type not in TOOL_RESULT_BLOCK_TYPES:
+            continue
+        nested = part_dict.get("content", part_dict.get("output"))
+        results.append(
+            {
+                "id": part_dict.get("tool_use_id", part_dict.get("call_id", "")),
+                "text": _extract_text_from_content_value(nested),
+                "is_error": bool(part_dict.get("is_error")),
+                "type": part_type,
+            }
+        )
+    return results
 
 
 def compile_messages_to_prompt(messages: List[Message]) -> str:
