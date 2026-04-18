@@ -224,6 +224,8 @@ async def test_anthropic_adds_repair_hint_for_string_replace_errors(monkeypatch)
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "Wrapper repair hint:" in payload["prompt"]
         assert "Read the file again before editing" in payload["prompt"]
+        assert "target file: `C:\\personal\\portfolio\\cowork_test_project\\src\\components\\SectionCard.tsx`" in payload["prompt"]
+        assert "likely stable anchor: `SectionCard`" in payload["prompt"]
         return {
             "type": "done",
             "response": "Retry with a reread.",
@@ -247,7 +249,11 @@ async def test_anthropic_adds_repair_hint_for_string_replace_errors(monkeypatch)
                             {
                                 "type": "tool_result",
                                 "tool_use_id": "toolu_1",
-                                "content": "Error: String to replace not found in file.",
+                                "content": (
+                                    "Update(C:\\personal\\portfolio\\cowork_test_project\\src\\components\\SectionCard.tsx)\n"
+                                    "Error: String to replace not found in file.\n"
+                                    "String:     <SectionCard className=\"test\">"
+                                ),
                                 "is_error": True,
                             }
                         ],

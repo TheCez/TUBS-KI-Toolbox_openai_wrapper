@@ -196,6 +196,8 @@ async def test_chat_completions_adds_repair_hint_for_string_replace_errors(monke
         assert "Wrapper repair hint:" in payload["prompt"]
         assert "Read the file again before editing" in payload["prompt"]
         assert "smaller anchored replacements" in payload["prompt"]
+        assert "target file: `C:\\personal\\portfolio\\cowork_test_project\\src\\components\\PrimaryButton.tsx`" in payload["prompt"]
+        assert "likely stable anchor: `const baseClassName`" in payload["prompt"]
         return {
             "type": "done",
             "response": "Try a smaller anchored edit.",
@@ -219,7 +221,12 @@ async def test_chat_completions_adds_repair_hint_for_string_replace_errors(monke
                             {
                                 "type": "tool_result",
                                 "tool_use_id": "toolu_1",
-                                "content": "Error: String to replace not found in file.",
+                                "content": (
+                                    "Update(C:\\personal\\portfolio\\cowork_test_project\\src\\components\\PrimaryButton.tsx)\n"
+                                    "Error: String to replace not found in file.\n"
+                                    "String: const baseClassName =\n"
+                                    "  'inline-flex items-center justify-center'"
+                                ),
                                 "is_error": True,
                             }
                         ],
