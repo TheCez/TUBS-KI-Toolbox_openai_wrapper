@@ -1,48 +1,29 @@
 import base64
 import uuid
-from typing import Tuple, List, Optional, Any
+from typing import Tuple, List, Any
 from app.models.anthropic import Message
+from app.services.translation import extract_text_from_content, extract_tool_calls_from_content, has_tool_result_blocks
 
 def compile_anthropic_messages_to_prompt(messages: List[Message]) -> str:
     compiled_prompt = ""
     for msg in messages:
         role = msg.role.capitalize()
-        content_text = ""
-        
-        if isinstance(msg.content, str):
-            content_text = msg.content
-        elif isinstance(msg.content, list):
-            for part in msg.content:
-                if getattr(part, "type", None) == "text":
-                    content_text += getattr(part, "text", "") + "\n"
-                elif isinstance(part, dict) and part.get("type") == "text":
-                    content_text += part.get("text", "") + "\n"
-                elif getattr(part, "type", None) == "tool_use":
-                    tool_id = getattr(part, "id", "")
-                    tool_input = getattr(part, "input", {})
-                    content_text += (
-                        f"[Tool Intention]: {getattr(part, 'name', '')}({tool_input}) [id={tool_id}]\n"
-                    )
-                elif isinstance(part, dict) and part.get("type") == "tool_use":
-                    content_text += (
-                        f"[Tool Intention]: {part.get('name', '')}({part.get('input', {})}) [id={part.get('id', '')}]\n"
-                    )
-                elif getattr(part, "type", None) == "tool_result":
-                    res = getattr(part, 'content', '')
-                    if isinstance(res, list):
-                        res = " ".join([getattr(r, 'text', '') for r in res if getattr(r, 'type', None) == 'text'])
-                    role = "Tool Result"
-                    content_text += str(res) + "\n"
-                elif isinstance(part, dict) and part.get("type") == "tool_result":
-                    res = part.get("content", "")
-                    if isinstance(res, list):
-                        res = " ".join([r.get("text", "") for r in res if r.get("type") == "text"])
-                    role = "Tool Result"
-                    content_text += str(res) + "\n"
-        
+
+        tool_calls = extract_tool_calls_from_content(msg.content)
+        if tool_calls:
+            tool_lines = [
+                f"{tool_call['name']}({tool_call['arguments']}) [id={tool_call['id']}]"
+                for tool_call in tool_calls
+            ]
+            compiled_prompt += "[Tool Intention]: " + "; ".join(tool_lines) + "\n"
+
+        content_text = extract_text_from_content(msg.content)
+        if has_tool_result_blocks(msg.content):
+            role = "Tool Result"
+
         if content_text:
             compiled_prompt += f"[{role}]: {content_text.strip()}\n"
-            
+
     return compiled_prompt.strip()
 
 def extract_anthropic_base64_image(source: Any) -> Tuple[Optional[str], Optional[bytes], Optional[str]]:

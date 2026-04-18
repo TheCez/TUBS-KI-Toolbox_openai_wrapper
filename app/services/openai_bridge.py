@@ -25,6 +25,7 @@ from app.services.prompt import (
     parse_tool_calls_xml,
 )
 from app.services.translation import compile_messages_to_prompt, get_images_from_messages
+from app.services.translation import extract_text_from_content
 
 
 def _content_item_to_message_part(item: Any) -> Optional[dict]:
@@ -32,6 +33,28 @@ def _content_item_to_message_part(item: Any) -> Optional[dict]:
         return {"type": "text", "text": item.text}
     if isinstance(item, ResponseInputImage):
         return {"type": "image_url", "image_url": {"url": item.image_url, "detail": item.detail}}
+    if isinstance(item, dict):
+        item_type = item.get("type")
+        if item_type in {"text", "input_text", "output_text"}:
+            return {"type": "text", "text": item.get("text", "")}
+        if item_type in {"image_url", "input_image"}:
+            image_url = item.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url", "")
+                detail = image_url.get("detail", item.get("detail", "auto"))
+            else:
+                url = image_url or item.get("url", "")
+                detail = item.get("detail", "auto")
+            return {"type": "image_url", "image_url": {"url": url, "detail": detail}}
+        if item_type in {"tool_result", "function_call_output"}:
+            return {
+                "type": item_type,
+                "content": item.get("content", item.get("output", "")),
+                "tool_use_id": item.get("tool_use_id"),
+                "call_id": item.get("call_id"),
+            }
+        if item_type in {"tool_use", "function_call"}:
+            return item
     return None
 
 
@@ -108,11 +131,13 @@ def build_custom_instructions(
     if instructions:
         blocks.append(instructions.strip())
 
-    system_messages = [
-        msg.content.strip()
-        for msg in messages
-        if msg.role.lower() in ("system", "developer") and isinstance(msg.content, str) and msg.content.strip()
-    ]
+    system_messages = []
+    for msg in messages:
+        if msg.role.lower() not in ("system", "developer"):
+            continue
+        content_text = extract_text_from_content(msg.content)
+        if content_text.strip():
+            system_messages.append(content_text.strip())
     if system_messages:
         blocks.append("\n".join(system_messages))
 

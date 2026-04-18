@@ -12,11 +12,13 @@ class StrictBaseModel(BaseModel):
 
 
 class ResponseInputText(StrictBaseModel):
+    model_config = ConfigDict(extra="allow")
     type: Literal["input_text", "text"]
     text: str
 
 
 class ResponseInputImage(StrictBaseModel):
+    model_config = ConfigDict(extra="allow")
     type: Literal["input_image", "image_url"]
     image_url: str
     detail: Optional[Literal["low", "high", "auto"]] = "auto"
@@ -46,12 +48,12 @@ class ResponseFunctionToolChoice(StrictBaseModel):
 
 class ResponseInputMessage(StrictBaseModel):
     role: Literal["system", "developer", "user", "assistant", "tool"]
-    content: Union[str, List[Union[ResponseInputText, ResponseInputImage]], None] = None
+    content: Union[str, List[Union[ResponseInputText, ResponseInputImage, Dict[str, Any]]], None] = None
     type: Literal["message"] = "message"
 
 
 class ResponseShorthandInputMessage(StrictBaseModel):
-    content: Union[str, List[Union[ResponseInputText, ResponseInputImage]]]
+    content: Union[str, List[Union[ResponseInputText, ResponseInputImage, Dict[str, Any]]]]
     role: Optional[Literal["system", "developer", "user", "assistant", "tool"]] = None
     type: Optional[str] = None
 

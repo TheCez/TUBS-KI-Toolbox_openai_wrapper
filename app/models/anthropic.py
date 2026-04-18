@@ -2,39 +2,39 @@ from typing import List, Optional, Union, Literal, Dict, Any
 from pydantic import BaseModel, ConfigDict
 
 class ImageSource(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["base64"]
     media_type: str
     data: str
 
 class TextContentBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["text"]
     text: str
 
 class ImageContentBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["image"]
     source: ImageSource
 
 class ToolUseContentBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["tool_use"]
     id: str
     name: str
     input: Dict[str, Any]
 
 class ToolResultContentBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["tool_result"]
     tool_use_id: str
-    content: Union[str, List[Union[TextContentBlock, ImageContentBlock]]]
+    content: Union[str, List[Union[TextContentBlock, ImageContentBlock, Dict[str, Any]]]]
     is_error: Optional[bool] = None
 
 class Message(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["user", "assistant"]
-    content: Union[str, List[Union[TextContentBlock, ImageContentBlock, ToolUseContentBlock, ToolResultContentBlock]]]
+    content: Union[str, List[Union[TextContentBlock, ImageContentBlock, ToolUseContentBlock, ToolResultContentBlock, Dict[str, Any]]]]
 
 class Tool(BaseModel):
     model_config = ConfigDict(extra="forbid")

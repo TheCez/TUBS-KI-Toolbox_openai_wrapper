@@ -122,6 +122,52 @@ async def test_responses_accepts_lobechat_tool_loop_items(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_responses_accepts_content_blocks_with_extra_fields(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Use the configured skills." in payload["customInstructions"]
+        assert "[User]: Hello from block list" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Processed blocks",
+            "promptTokens": 6,
+            "responseTokens": 3,
+            "totalTokens": 9,
+        }
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "role": "developer",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Use the configured skills.",
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Hello from block list", "annotations": []}
+                        ],
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["output_text"] == "Processed blocks"
+
+
+@pytest.mark.asyncio
 async def test_responses_streaming(monkeypatch):
     async def fake_stream():
         yield {"type": "chunk", "content": "Hello "}

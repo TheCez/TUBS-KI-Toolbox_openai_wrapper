@@ -3,17 +3,17 @@ from pydantic import BaseModel, ConfigDict
 from app.models.tubs import CloudModel, LocalModel
 
 class ImageUrl(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     url: str
     detail: Optional[Literal["low", "high", "auto"]] = "auto"
 
 class ContentPartText(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["text"]
     text: str
 
 class ContentPartImage(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["image_url"]
     image_url: ImageUrl
 
@@ -31,7 +31,7 @@ class ToolCall(BaseModel):
 class Message(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["system", "user", "assistant", "tool", "developer"]
-    content: Union[str, List[Union[ContentPartText, ContentPartImage]], None] = None
+    content: Union[str, List[Union[ContentPartText, ContentPartImage, Dict[str, Any]]], None] = None
     reasoning: Optional[str] = None
     reasoning_content: Optional[str] = None
     name: Optional[str] = None

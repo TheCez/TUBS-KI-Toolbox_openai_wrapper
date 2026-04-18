@@ -92,6 +92,68 @@ async def test_anthropic_prompt_includes_tool_history(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anthropic_accepts_block_extras_and_function_call_output_shapes(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "[User]: Hello from block content" in payload["prompt"]
+        assert "[Tool Intention]: search({\"query\": \"latest\"}) [id=call_1]" in payload["prompt"]
+        assert "[Tool Result]: done" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Summarized",
+            "promptTokens": 9,
+            "responseTokens": 4,
+            "totalTokens": 13,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-opus-4-1",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Hello from block content",
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call_1",
+                                "name": "search",
+                                "arguments": {"query": "latest"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "function_call_output",
+                                "call_id": "call_1",
+                                "output": "done",
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Summarized"
+
+
+@pytest.mark.asyncio
 async def test_anthropic_streaming_hides_tool_xml(monkeypatch):
     async def fake_stream():
         yield {
