@@ -366,7 +366,7 @@ async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypa
             headers={"Authorization": "Bearer test-token"},
             json={
                 "model": "gpt-5.4",
-                "messages": [{"role": "user", "content": "Initial request"}],
+                "messages": [{"role": "user", "content": "Initial request " + ("alpha " * 20)}],
             },
         )
         second = await ac.post(
@@ -375,10 +375,10 @@ async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypa
             json={
                 "model": "gpt-5.4",
                 "messages": [
-                    {"role": "user", "content": "Initial request"},
-                    {"role": "assistant", "content": "Initial answer"},
-                    {"role": "user", "content": "Follow-up request"},
-                    {"role": "assistant", "content": "Follow-up answer"},
+                    {"role": "user", "content": "Initial request " + ("alpha " * 20)},
+                    {"role": "assistant", "content": "Initial answer " + ("beta " * 16)},
+                    {"role": "user", "content": "Follow-up request " + ("gamma " * 16)},
+                    {"role": "assistant", "content": "Follow-up answer " + ("delta " * 16)},
                     {"role": "user", "content": "Latest request"},
                 ],
             },

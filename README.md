@@ -15,6 +15,7 @@ With this wrapper, any client, agentic framework, or application that expects an
 - **Extensive Parity:** Context mapping and proper formatting for standard clients.
 - **Backpressure Controls:** Optional wrapper-side concurrency and pacing limits to protect the TU-BS upstream from bursty agents such as Claude Code.
 - **Thread-Aware Context Compaction:** Reuses TU-BS threads while shrinking each outbound prompt to a controlled working set so clients with large histories can stay inside tight upstream token limits.
+- **Durable Context Layer:** Adds wrapper-owned long-horizon memory with Redis hot state, Postgres + `pgvector` durable recall, and model-facing retrieval tools for better recovery from TU-BS thread loss.
 
 ## Getting Started
 
@@ -52,7 +53,7 @@ If your upstream TU-BS deployment has a hard per-request limit such as `10k` pro
 ```yaml
 environment:
   - TUBS_MAX_PROMPT_TOKENS=9000
-  - TUBS_THREAD_PROMPT_TOKENS=3000
+  - TUBS_THREAD_PROMPT_TOKENS=9000
   - TUBS_KEEP_LAST_TURNS=8
   - TUBS_COMPACT_SUMMARY_CHARS=4000
   - TUBS_THREAD_SUMMARY_CHARS=1200
@@ -60,7 +61,7 @@ environment:
 ```
 
 - `TUBS_MAX_PROMPT_TOKENS` is the approximate prompt budget for requests that do not yet have a cached TU-BS thread.
-- `TUBS_THREAD_PROMPT_TOKENS` is the smaller working-set budget used once the wrapper can rely on an existing TU-BS thread.
+- `TUBS_THREAD_PROMPT_TOKENS` is the prompt budget used once the wrapper can rely on an existing TU-BS thread. In this version, it defaults to the same ceiling as `TUBS_MAX_PROMPT_TOKENS` unless you explicitly lower it.
 - `TUBS_KEEP_LAST_TURNS` controls how many recent non-system messages are preserved before older context is compacted.
 - `TUBS_COMPACT_SUMMARY_CHARS` controls how much room is available for stateless summary replay.
 - `TUBS_THREAD_SUMMARY_CHARS` controls the compact bridge summary size when a TU-BS thread already exists.
@@ -68,9 +69,68 @@ environment:
 
 For a `10k` upstream cap, the shipped defaults are a good starting point:
 - first request: up to about `9k` prompt tokens
-- follow-up requests on the same TU-BS thread: up to about `3k` prompt tokens plus compacted bridge context
+- follow-up requests on the same TU-BS thread: also up to about `9k` prompt tokens by default, unless you deliberately lower `TUBS_THREAD_PROMPT_TOKENS`
 
-This keeps the latest task intact, avoids blunt truncation, and leans on TU-BS thread history for the older conversation state.
+The wrapper now also avoids early compaction when the full prompt still fits inside budget. It only starts summarizing older turns once the compiled prompt actually exceeds the configured ceiling.
+
+Practical meaning:
+- If the compiled outbound prompt is still under your configured budget, the wrapper now sends the full prompt without compacting older turns.
+- Compaction is a true overflow fallback, not the default path.
+- If you want compaction to begin around a `10k` upstream ceiling, set `TUBS_MAX_PROMPT_TOKENS` and `TUBS_THREAD_PROMPT_TOKENS` just under that ceiling, for example `9000`.
+
+### Durable Context Layer
+
+The wrapper can now keep its own app-managed memory instead of relying only on TU-BS thread replay. This gives coding agents a more reliable way to recover earlier goals, failures, file facts, and decisions after long sessions.
+
+```yaml
+environment:
+  - TUBS_CONTEXT_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tubs_context
+  - TUBS_CONTEXT_HOT_BACKEND=redis
+  - TUBS_CONTEXT_HOT_TTL_SECONDS=21600
+  - TUBS_CONTEXT_HOT_PREFIX=tubs:context:hot:
+  - TUBS_CONTEXT_TOOLS_ENABLED=true
+  - TUBS_CONTEXT_TOOL_LOOP_LIMIT=4
+  - TUBS_CONTEXT_EMBEDDING_DIMENSIONS=64
+```
+
+How it works:
+- Redis stores a small hot snapshot for each logical wrapper thread: current objective, plan, blockers, recent decisions, and recent failures.
+- Postgres + `pgvector` stores durable memory records such as goals, constraints, tool failures, file facts, code summaries, and assistant decisions.
+- Non-streaming chat, responses, and Anthropic requests automatically expose wrapper-owned context tools like `search_context`, `get_context_by_ids`, and `get_thread_state`.
+- The wrapper resolves those context tool calls locally, then asks the model to continue with the retrieved context, so only relevant history comes back into the prompt.
+- These tools are presented to the model as optional retrieval helpers, not mandatory steps. The model should answer directly when the current prompt already contains enough information.
+- `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
+
+Important behavior notes:
+- Durable context is scoped per logical wrapper thread, not shared globally.
+- The current request is ingested after the turn completes, so retrieval stays focused on prior context instead of echoing the active prompt back to the model.
+- Streaming requests still get the lightweight Redis-backed summary, but wrapper-owned context tools are only resolved on non-streaming requests in this version.
+- TU-BS thread memory is now a secondary helper. The primary long-horizon memory layer is the wrapper-owned durable context system.
+
+The default `docker-compose.yml` now starts a `pgvector`-enabled Postgres container and points the API at it automatically. If Postgres is unavailable, the wrapper degrades safely to in-memory durable storage while Redis hot snapshots continue to work.
+
+### TU-BS Threads vs Wrapper Memory
+
+The wrapper now uses a layered approach:
+
+- TU-BS threads:
+  useful as a lightweight upstream continuity helper
+- Wrapper hot context:
+  fast Redis snapshot for the current objective, plan, blockers, and recent failures
+- Wrapper durable context:
+  Postgres + `pgvector` long-horizon memory with retrieval tools
+
+Recommended interpretation:
+- TU-BS threads are no longer the source of truth for long conversations.
+- They still help with short follow-up continuity and can reduce the amount of replay needed when the upstream behaves well.
+- If TU-BS thread replay or thread-side compaction is weak, the wrapper can still recover older state through durable retrieval.
+- Because of that, TU-BS threads are no longer critical, but they are also not useless.
+
+Current recommendation:
+- Keep TU-BS threads enabled for now.
+- Treat them as a best-effort optimization, not as the foundation of memory.
+- Do not lower prompt budgets just because a TU-BS thread exists unless you have measured that it helps.
+- If future testing shows TU-BS threads consistently harm output quality or cause confusing context drift, they can be disabled later without losing the new wrapper-owned durable context architecture.
 
 ### 2. Python Demo: Connecting via the `openai` module
 

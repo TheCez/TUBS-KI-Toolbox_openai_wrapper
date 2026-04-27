@@ -6,11 +6,24 @@ services:
     networks:
       - setup_npm
 
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tubs-postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-tubs_context}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - tubs-postgres-data:/var/lib/postgresql/data
+    networks:
+      - setup_npm
+
   api:
     build: .
     container_name: tubs-api
     depends_on:
       - redis
+      - postgres
     ports:
       - "8000:8000"
     environment:
@@ -20,7 +33,7 @@ services:
       - TUBS_MAX_CONCURRENT_REQUESTS=${TUBS_MAX_CONCURRENT_REQUESTS:-1}
       - TUBS_MIN_REQUEST_INTERVAL_SECONDS=${TUBS_MIN_REQUEST_INTERVAL_SECONDS:-0}
       - TUBS_MAX_PROMPT_TOKENS=${TUBS_MAX_PROMPT_TOKENS:-9000}
-      - TUBS_THREAD_PROMPT_TOKENS=${TUBS_THREAD_PROMPT_TOKENS:-3000}
+      - TUBS_THREAD_PROMPT_TOKENS=${TUBS_THREAD_PROMPT_TOKENS:-9000}
       - TUBS_KEEP_LAST_TURNS=${TUBS_KEEP_LAST_TURNS:-8}
       - TUBS_COMPACT_SUMMARY_CHARS=${TUBS_COMPACT_SUMMARY_CHARS:-4000}
       - TUBS_THREAD_SUMMARY_CHARS=${TUBS_THREAD_SUMMARY_CHARS:-1200}
@@ -33,6 +46,13 @@ services:
       - TUBS_STAGED_INGEST_BLOCK_TOKENS=${TUBS_STAGED_INGEST_BLOCK_TOKENS:-2200}
       - TUBS_STAGED_INGEST_MAX_BLOCKS=${TUBS_STAGED_INGEST_MAX_BLOCKS:-12}
       - TUBS_STAGED_INGEST_LEDGER_CHARS=${TUBS_STAGED_INGEST_LEDGER_CHARS:-1200}
+      - TUBS_CONTEXT_DATABASE_URL=${TUBS_CONTEXT_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/tubs_context}
+      - TUBS_CONTEXT_HOT_BACKEND=${TUBS_CONTEXT_HOT_BACKEND:-redis}
+      - TUBS_CONTEXT_HOT_TTL_SECONDS=${TUBS_CONTEXT_HOT_TTL_SECONDS:-21600}
+      - TUBS_CONTEXT_HOT_PREFIX=${TUBS_CONTEXT_HOT_PREFIX:-tubs:context:hot:}
+      - TUBS_CONTEXT_TOOLS_ENABLED=${TUBS_CONTEXT_TOOLS_ENABLED:-true}
+      - TUBS_CONTEXT_TOOL_LOOP_LIMIT=${TUBS_CONTEXT_TOOL_LOOP_LIMIT:-4}
+      - TUBS_CONTEXT_EMBEDDING_DIMENSIONS=${TUBS_CONTEXT_EMBEDDING_DIMENSIONS:-64}
       # Optional: Override default Anthropic model mappings
       # - ANTHROPIC_MODEL_MAP={"claude-3-5-sonnet-20241022": "gpt-4o", "claude-3-opus-20240229": "gpt-5.4"}
     volumes:
@@ -43,3 +63,6 @@ services:
 networks:
   setup_npm:
     external: true
+
+volumes:
+  tubs-postgres-data:

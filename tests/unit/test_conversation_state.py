@@ -119,13 +119,14 @@ def test_build_prompt_with_compaction_uses_thread_budget_and_keeps_latest_reques
 
 def test_build_prompt_with_compaction_summarizes_older_messages_without_thread(monkeypatch):
     monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "2")
-    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "80")
+    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "25")
     monkeypatch.setenv("TUBS_COMPACT_SUMMARY_CHARS", "220")
+    monkeypatch.setenv("TUBS_APPROX_CHARS_PER_TOKEN", "1")
 
     messages = [
         {"role": "system", "content": "You are helpful."},
-        {"role": "user", "content": "Old request with setup."},
-        {"role": "assistant", "content": "Old reply."},
+        {"role": "user", "content": "Old request with setup and several extra details. " + ("alpha " * 20)},
+        {"role": "assistant", "content": "Old reply with more detail. " + ("beta " * 16)},
         {"role": "user", "content": "Newest request."},
     ]
 
@@ -137,7 +138,32 @@ def test_build_prompt_with_compaction_summarizes_older_messages_without_thread(m
         thread_id=None,
     )
 
-    assert "Earlier conversation summary:" in prompt
+    assert "Newest request." in prompt
+    assert "Old request with setup and several extra details." not in prompt
+
+
+def test_build_prompt_with_compaction_keeps_full_prompt_when_under_budget(monkeypatch):
+    monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "2")
+    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "500")
+    monkeypatch.delenv("TUBS_THREAD_PROMPT_TOKENS", raising=False)
+
+    messages = [
+        {"role": "user", "content": "Old request with setup."},
+        {"role": "assistant", "content": "Old reply with useful detail."},
+        {"role": "user", "content": "Newest request."},
+    ]
+
+    prompt = build_prompt_with_compaction(
+        messages,
+        compile_prompt=lambda items: "\n".join(
+            f"[{item['role'].capitalize()}]: {item['content']}" for item in items
+        ),
+        thread_id="thread_keep_full",
+    )
+
+    assert "Earlier conversation summary:" not in prompt
+    assert "Old request with setup." in prompt
+    assert "Old reply with useful detail." in prompt
     assert "Newest request." in prompt
 
 

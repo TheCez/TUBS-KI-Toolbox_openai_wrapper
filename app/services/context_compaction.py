@@ -48,8 +48,10 @@ def _max_prompt_tokens() -> int:
 
 
 def _thread_prompt_tokens() -> int:
-    default_tokens = min(_max_prompt_tokens(), 3500)
-    return max(50, int(os.getenv("TUBS_THREAD_PROMPT_TOKENS", str(default_tokens))))
+    configured = os.getenv("TUBS_THREAD_PROMPT_TOKENS")
+    if configured is None or not configured.strip():
+        return _max_prompt_tokens()
+    return max(50, int(configured))
 
 
 def _chars_per_token() -> int:
@@ -323,6 +325,10 @@ def build_prompt_with_compaction(
     summary_budget = _thread_summary_budget() if thread_id else _summary_budget()
     prompt_budget = _prompt_char_budget(thread_id)
     step_chunk_size = max(2, keep_last_turns)
+
+    full_prompt = compile_prompt(messages).strip()
+    if len(full_prompt) <= prompt_budget:
+        return full_prompt
 
     dialogue_indexes = [
         idx for idx, message in enumerate(messages) if _message_role(message) not in {"system", "developer"}

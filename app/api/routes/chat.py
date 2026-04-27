@@ -14,6 +14,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.openai import ChatCompletionRequest, ChatCompletionResponse, ChoiceNonStreaming, Message, Usage
 from app.services.conversation_state import build_conversation_key, get_cached_thread_id, remember_thread_id
+from app.services.context_ingest import context_ingest_service
+from app.services.context_runtime import augment_openai_messages_with_context, resolve_openai_context_tools
 from app.services.openai_bridge import build_tubs_payload_from_messages, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml, truncate_at_stop
 from app.services.staged_ingestion import prepare_staged_messages
@@ -40,6 +42,7 @@ async def chat_completions(
         explicit_user=body.user,
     )
     thread_id = get_cached_thread_id(conversation_key)
+    context_thread_id = conversation_key
     staged = await prepare_staged_messages(
         model=body.model,
         messages=body.messages,
@@ -47,23 +50,43 @@ async def chat_completions(
         conversation_key=conversation_key,
         bearer_token=token,
     )
+    effective_messages = augment_openai_messages_with_context(staged.messages, context_thread_id)
     thread_id = staged.thread_id
-    tubs_payload, images, model_str = build_tubs_payload_from_messages(
-        model=body.model,
-        messages=staged.messages,
-        thread_id=thread_id,
-        response_format=body.response_format,
-        tools=body.tools,
-        max_output_tokens=body.max_completion_tokens or body.max_tokens,
-        tool_choice=body.tool_choice,
-    )
+    model_str = str(body.model.value) if hasattr(body.model, "value") else str(body.model)
 
-    response_or_stream = await async_send_tubs_request(
-        payload=tubs_payload,
-        images=images,
-        bearer_token=token,
-        stream=bool(body.stream),
-    )
+    if body.stream:
+        tubs_payload, images, model_str = build_tubs_payload_from_messages(
+            model=body.model,
+            messages=effective_messages,
+            thread_id=thread_id,
+            response_format=body.response_format,
+            tools=body.tools,
+            max_output_tokens=body.max_completion_tokens or body.max_tokens,
+            tool_choice=body.tool_choice,
+        )
+        response_or_stream = await async_send_tubs_request(
+            payload=tubs_payload,
+            images=images,
+            bearer_token=token,
+            stream=True,
+        )
+    else:
+        resolved = await resolve_openai_context_tools(
+            model=body.model,
+            messages=effective_messages,
+            thread_id=thread_id,
+            context_thread_id=context_thread_id,
+            bearer_token=token,
+            instructions=None,
+            response_format=body.response_format,
+            tools=body.tools,
+            reasoning=None,
+            max_output_tokens=body.max_completion_tokens or body.max_tokens,
+            tool_choice=body.tool_choice,
+            send_request=async_send_tubs_request,
+        )
+        response_or_stream = resolved.final_response
+        model_str = str(body.model.value) if hasattr(body.model, "value") else str(body.model)
 
     req_id = f"chatcmpl-{uuid.uuid4().hex}"
     created_time = int(time.time())
@@ -204,6 +227,7 @@ async def chat_completions(
         response_text,
         tools=body.tools,
     )
+    context_ingest_service().ingest_turn(context_thread_id, body.messages, response_text=response_text or None)
 
     return ChatCompletionResponse(
         id=req_id,
