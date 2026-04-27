@@ -3,7 +3,7 @@ import json
 import uuid
 from typing import Tuple, List, Optional, Any, Iterable
 from app.models.openai import Message, ContentPartImage
-from app.services.tool_error_guidance import guidance_for_tool_errors
+from app.services.tool_error_guidance import guidance_for_tool_errors, guidance_for_tool_successes
 
 TEXT_BLOCK_TYPES = {"text", "input_text", "output_text"}
 TOOL_RESULT_BLOCK_TYPES = {"tool_result", "function_call_output"}
@@ -128,6 +128,7 @@ def compile_messages_to_prompt(messages: List[Message]) -> str:
     """
     compiled_prompt = ""
     deferred_hints: list[str] = []
+    deferred_success_hints: list[str] = []
     for msg in messages:
         if msg.role.lower() in ["system", "developer"]:
             continue
@@ -162,9 +163,12 @@ def compile_messages_to_prompt(messages: List[Message]) -> str:
         if content_text:
             compiled_prompt += f"[{role}]: {content_text.strip()}\n"
         deferred_hints.extend(guidance_for_tool_errors(tool_results))
+        deferred_success_hints.extend(guidance_for_tool_successes(tool_results))
 
     for hint in dict.fromkeys(deferred_hints):
         compiled_prompt += f"[Wrapper Repair Hint]: {hint}\n"
+    for hint in dict.fromkeys(deferred_success_hints):
+        compiled_prompt += f"[Wrapper Completion Hint]: {hint}\n"
             
     # Remove the very last newline if exists
     return compiled_prompt.strip()

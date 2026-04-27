@@ -100,6 +100,7 @@ How it works:
 - The wrapper resolves those context tool calls locally, then asks the model to continue with the retrieved context, so only relevant history comes back into the prompt.
 - These tools are presented to the model as optional retrieval helpers, not mandatory steps. The model should answer directly when the current prompt already contains enough information.
 - `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
+- The wrapper also injects targeted planner hints from tool results: repair hints for failed edits, and completion hints for successful file writes/edits so agents are more likely to explicitly close related tasks or todos.
 
 Important behavior notes:
 - Durable context is scoped per logical wrapper thread, not shared globally.

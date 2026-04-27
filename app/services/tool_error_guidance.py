@@ -10,6 +10,11 @@ _QUOTED_SYMBOL_RE = re.compile(r"String:\s*(.+)", re.IGNORECASE | re.DOTALL)
 _DECLARATION_RE = re.compile(
     r"\b(const|function|class|def|async def)\s+([A-Za-z_][A-Za-z0-9_]*)|<([A-Z][A-Za-z0-9_]*)\b"
 )
+_RELATIVE_FILE_RE = re.compile(r"\b[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|json|md|yaml|yml|html|css|scss|java|kt|go|rs|cpp|c|h)\b")
+_SUCCESS_OPERATION_RE = re.compile(
+    r"\b(write|wrote|written|create|created|add|added|update|updated|edit|edited|modify|modified|saved)\b",
+    re.IGNORECASE,
+)
 
 
 def _extract_file_path(text: str) -> str | None:
@@ -17,6 +22,9 @@ def _extract_file_path(text: str) -> str | None:
         match = pattern.search(text)
         if match:
             return match.group(0).rstrip(") ")
+    relative = _RELATIVE_FILE_RE.search(text)
+    if relative:
+        return relative.group(0)
     return None
 
 
@@ -84,6 +92,35 @@ def guidance_for_tool_errors(tool_results: Iterable[dict]) -> list[str]:
         hints.append(
             "Wrapper repair hint: a file write failed. Re-read the current file contents, verify the target path, "
             "and prefer a minimal edit over rewriting a large block."
+        )
+
+    return hints + list(dict.fromkeys(metadata_hints))
+
+
+def guidance_for_tool_successes(tool_results: Iterable[dict]) -> list[str]:
+    hints: list[str] = []
+    metadata_hints: list[str] = []
+
+    for result in tool_results:
+        if result.get("is_error"):
+            continue
+        raw_text = (result.get("text") or "").strip()
+        if not raw_text:
+            continue
+        if not _SUCCESS_OPERATION_RE.search(raw_text):
+            continue
+
+        file_path = _extract_file_path(raw_text)
+        if not file_path:
+            continue
+
+        metadata_hints.append(f"Wrapper completion metadata: successful file operation on `{file_path}`.")
+
+    if metadata_hints:
+        hints.append(
+            "Wrapper completion hint: the requested file operation appears to have succeeded. "
+            "If this satisfies the active task, explicitly mark the related task or todo as completed "
+            "and close out any remaining planner state instead of leaving it open."
         )
 
     return hints + list(dict.fromkeys(metadata_hints))

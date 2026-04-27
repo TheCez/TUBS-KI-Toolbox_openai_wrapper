@@ -240,6 +240,48 @@ async def test_chat_completions_adds_repair_hint_for_string_replace_errors(monke
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_adds_completion_hint_for_successful_file_write(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "[Wrapper Completion Hint]:" in payload["prompt"]
+        assert "mark the related task or todo as completed" in payload["prompt"]
+        assert "successful file operation on `fibonacci.py`" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "The file is created and the task can be closed.",
+            "promptTokens": 8,
+            "responseTokens": 4,
+            "totalTokens": 12,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_1",
+                                "content": "Wrote 12 lines to fibonacci.py",
+                                "is_error": False,
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "Close out the task if the requested file is done."},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_streaming_hides_tool_xml(monkeypatch):
     async def fake_stream():
         yield {

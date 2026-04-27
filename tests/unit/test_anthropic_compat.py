@@ -267,6 +267,49 @@ async def test_anthropic_adds_repair_hint_for_string_replace_errors(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_anthropic_adds_completion_hint_for_successful_file_write(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "[Wrapper Completion Hint]:" in payload["prompt"]
+        assert "mark the related task or todo as completed" in payload["prompt"]
+        assert "successful file operation on `fibonacci.py`" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "The requested file operation succeeded and the task can be closed.",
+            "promptTokens": 6,
+            "responseTokens": 3,
+            "totalTokens": 9,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_1",
+                                "content": "Wrote 12 lines to fibonacci.py",
+                                "is_error": False,
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "Close the task if the requested file is done."},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "The requested file operation succeeded and the task can be closed."
+
+
+@pytest.mark.asyncio
 async def test_anthropic_accepts_block_extras_and_function_call_output_shapes(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "[User]: Hello from block content" in payload["prompt"]
