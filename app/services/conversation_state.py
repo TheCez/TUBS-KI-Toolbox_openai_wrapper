@@ -239,7 +239,8 @@ def forget_thread_id(conversation_key: str) -> None:
 
 def messages_for_upstream_thread(messages: Sequence[Any], thread_id: str | None) -> list[Any]:
     if not upstream_threads_enabled() or not thread_id:
-        return list(messages)
+        if not upstream_threads_enabled():
+            return list(messages)
 
     preserved = [message for message in messages if _message_role(message) in {"system", "developer"}]
     dialogue_messages = [message for message in messages if _message_role(message) not in {"system", "developer"}]
@@ -255,10 +256,14 @@ def messages_for_upstream_thread(messages: Sequence[Any], thread_id: str | None)
     if last_user_index is None:
         return [*preserved, dialogue_messages[-1]]
 
+    start_index = last_user_index
+    while start_index > 0 and _is_tool_result_only_message(messages[start_index - 1]):
+        start_index -= 1
+
     active_turn = [
         message
         for idx, message in enumerate(messages)
-        if idx >= last_user_index and _message_role(message) not in {"system", "developer"}
+        if idx >= start_index and _message_role(message) not in {"system", "developer"}
     ]
     if not active_turn:
         active_turn = [dialogue_messages[-1]]
