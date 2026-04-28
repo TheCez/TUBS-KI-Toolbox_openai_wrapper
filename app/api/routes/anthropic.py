@@ -57,8 +57,8 @@ security = HTTPBearer(auto_error=False)
 STOP_TRUNCATION_ENABLED = os.getenv("ENABLE_STOP_TRUNCATION", "false").lower() == "true"
 
 
-def _openclaw_minimal_context_mode(policy) -> bool:
-    return policy.client_name == "openclaw" and policy.minimal_upstream_mode
+def _client_minimal_context_mode(policy) -> bool:
+    return policy.client_name in {"openclaw", "claude-code"} and policy.minimal_upstream_mode
 
 
 async def get_anthropic_token(
@@ -133,11 +133,11 @@ async def anthropic_messages(
     )
 
     async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
-        minimal_mode = _openclaw_minimal_context_mode(policy)
+        minimal_mode = _client_minimal_context_mode(policy)
         allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = None if force_fresh_thread or policy.strict_wrapper_state or not allow_upstream_threads else get_cached_thread_id(conversation_key)
-        pinned_instruction = pinned_state_instruction(context_thread_id)
-        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
+        pinned_instruction = None if minimal_mode else pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if minimal_mode or thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         if minimal_mode:
             staged_messages = list(body.messages)
             staged_thread_id = thread_id
@@ -160,7 +160,7 @@ async def anthropic_messages(
         )
         effective_messages = (
             working_messages
-            if staged_thread_id
+            if staged_thread_id or minimal_mode
             else augment_anthropic_messages_with_context(working_messages, context_thread_id)
         )
         overflow_mode = staged_applied or _overflow_active_for_anthropic_messages(
@@ -197,13 +197,13 @@ async def anthropic_messages(
         return resolved.final_response
 
     if body.stream:
-        minimal_mode = _openclaw_minimal_context_mode(policy)
+        minimal_mode = _client_minimal_context_mode(policy)
         allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = get_cached_thread_id(conversation_key)
         if policy.strict_wrapper_state or not allow_upstream_threads:
             thread_id = None
-        pinned_instruction = pinned_state_instruction(context_thread_id)
-        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
+        pinned_instruction = None if minimal_mode else pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if minimal_mode or thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         if minimal_mode:
             staged_messages = list(body.messages)
             staged_thread_id = thread_id
@@ -224,7 +224,7 @@ async def anthropic_messages(
         )
         effective_messages = (
             working_messages
-            if staged_thread_id
+            if staged_thread_id or minimal_mode
             else augment_anthropic_messages_with_context(working_messages, context_thread_id)
         )
         images = get_images_from_anthropic_messages(effective_messages)

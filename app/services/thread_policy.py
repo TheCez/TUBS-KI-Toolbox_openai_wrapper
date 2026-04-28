@@ -47,6 +47,8 @@ def resolve_thread_policy(*, endpoint: str, headers: Mapping[str, str] | None = 
     openclaw_strict_default = os.getenv("TUBS_OPENCLAW_STRICT_WRAPPER_STATE", "true").strip().lower() == "true"
     minimal_upstream_mode = False
     openclaw_minimal_default = os.getenv("TUBS_OPENCLAW_MINIMAL_MODE", "true").strip().lower() == "true"
+    claude_code_strict_default = os.getenv("TUBS_CLAUDE_CODE_STRICT_WRAPPER_STATE", "true").strip().lower() == "true"
+    claude_code_minimal_default = os.getenv("TUBS_CLAUDE_CODE_MINIMAL_MODE", "true").strip().lower() == "true"
 
     no_thread_clients = _csv_env("TUBS_NO_UPSTREAM_THREAD_CLIENTS")
     strict_clients = _csv_env("TUBS_STRICT_WRAPPER_STATE_CLIENTS")
@@ -60,6 +62,12 @@ def resolve_thread_policy(*, endpoint: str, headers: Mapping[str, str] | None = 
         use_upstream_threads = False
         reuse_upstream_thread = False
     if client_name == "openclaw" and openclaw_minimal_default:
+        minimal_upstream_mode = True
+    if client_name == "claude-code" and claude_code_strict_default:
+        strict_wrapper_state = True
+        use_upstream_threads = False
+        reuse_upstream_thread = False
+    if client_name == "claude-code" and claude_code_minimal_default:
         minimal_upstream_mode = True
     if client_name in strict_clients:
         strict_wrapper_state = True

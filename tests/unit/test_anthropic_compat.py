@@ -3,6 +3,7 @@ from httpx import ASGITransport, AsyncClient
 from fastapi import HTTPException
 
 from app.main import app
+from app.services.thread_policy import resolve_thread_policy
 
 
 async def _collect_sse_chunks(response) -> list[str]:
@@ -114,6 +115,55 @@ async def test_anthropic_accepts_context_management(monkeypatch):
                 "context_management": {
                     "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
                 },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Plain answer"
+
+
+def test_thread_policy_defaults_claude_code_to_strict_minimal(monkeypatch):
+    monkeypatch.delenv("TUBS_CLAUDE_CODE_STRICT_WRAPPER_STATE", raising=False)
+    monkeypatch.delenv("TUBS_CLAUDE_CODE_MINIMAL_MODE", raising=False)
+
+    policy = resolve_thread_policy(
+        endpoint="anthropic",
+        headers={"user-agent": "Claude-Code/1.0"},
+    )
+
+    assert policy.client_name == "claude-code"
+    assert policy.strict_wrapper_state is True
+    assert policy.minimal_upstream_mode is True
+    assert policy.use_upstream_threads is False
+    assert policy.reuse_upstream_thread is False
+
+
+@pytest.mark.asyncio
+async def test_anthropic_claude_code_minimal_mode_skips_wrapper_context_augmentation(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Durable thread state summary:" not in payload["prompt"]
+        assert "Fresh thread rehydration:" not in (payload.get("customInstructions") or "")
+        return {
+            "type": "done",
+            "response": "Plain answer",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    def fail_if_augmented(*args, **kwargs):
+        raise AssertionError("Claude Code minimal mode should not use wrapper context augmentation by default")
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+    monkeypatch.setattr("app.api.routes.anthropic.augment_anthropic_messages_with_context", fail_if_augmented)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token", "user-agent": "Claude-Code/1.0"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [{"role": "user", "content": "Hello"}],
             },
         )
 
