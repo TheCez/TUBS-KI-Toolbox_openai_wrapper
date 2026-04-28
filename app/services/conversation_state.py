@@ -137,6 +137,25 @@ def _redis_url() -> str | None:
     return value or None
 
 
+def _is_tool_result_only_message(message: Any) -> bool:
+    content = _message_content(message)
+    if not isinstance(content, list):
+        return False
+    saw_tool_result = False
+    for item in content:
+        if isinstance(item, dict):
+            item_type = item.get("type")
+        else:
+            item_type = getattr(item, "type", None)
+        if item_type in {"tool_result", "function_call_output"}:
+            saw_tool_result = True
+            continue
+        if item_type in {None, "text", "input_text", "output_text"}:
+            return False
+        return False
+    return saw_tool_result
+
+
 def _build_backend() -> ThreadCacheBackend:
     backend_name = _thread_cache_backend_name()
     if backend_name == "memory":
@@ -226,7 +245,24 @@ def messages_for_upstream_thread(messages: Sequence[Any], thread_id: str | None)
     dialogue_messages = [message for message in messages if _message_role(message) not in {"system", "developer"}]
     if not dialogue_messages:
         return preserved
-    return [*preserved, dialogue_messages[-1]]
+
+    last_user_index = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if _message_role(messages[idx]) == "user" and not _is_tool_result_only_message(messages[idx]):
+            last_user_index = idx
+            break
+
+    if last_user_index is None:
+        return [*preserved, dialogue_messages[-1]]
+
+    active_turn = [
+        message
+        for idx, message in enumerate(messages)
+        if idx >= last_user_index and _message_role(message) not in {"system", "developer"}
+    ]
+    if not active_turn:
+        active_turn = [dialogue_messages[-1]]
+    return [*preserved, *active_turn]
 
 
 def reset_thread_cache() -> None:

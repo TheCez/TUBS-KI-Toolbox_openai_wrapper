@@ -487,3 +487,51 @@ async def test_anthropic_rotates_exhausted_tubs_thread(monkeypatch):
     assert response.status_code == 200
     assert response.json()["content"][0]["text"] == "Recovered message"
     assert calls["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_anthropic_reused_thread_keeps_active_turn_window(monkeypatch):
+    monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "true")
+    monkeypatch.setattr("app.api.routes.anthropic.get_cached_thread_id", lambda _key: "thread_123")
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert payload.get("thread") == "thread_123"
+        assert "[User]: Latest task" in payload["prompt"]
+        assert "[Tool Intention]: search({\"q\": \"x\"}) [id=toolu_1]" in payload["prompt"]
+        assert "[Tool Result OK id=toolu_1]: done" in payload["prompt"]
+        assert "[User]: Earlier request" not in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Recovered active turn.",
+            "promptTokens": 5,
+            "responseTokens": 3,
+            "totalTokens": 8,
+            "thread": {"id": "thread_123"},
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [
+                    {"role": "user", "content": "Earlier request"},
+                    {"role": "assistant", "content": "Earlier answer"},
+                    {"role": "user", "content": "Latest task"},
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "x"}}],
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}],
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Recovered active turn."

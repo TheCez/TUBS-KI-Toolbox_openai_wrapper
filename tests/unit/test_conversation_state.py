@@ -210,6 +210,25 @@ def test_messages_for_upstream_thread_keeps_only_latest_dialogue_when_enabled(mo
     ]
 
 
+def test_messages_for_upstream_thread_keeps_active_turn_window_for_tool_loops(monkeypatch):
+    monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "true")
+    messages = [
+        {"role": "user", "content": "Earlier request"},
+        {"role": "assistant", "content": "Earlier answer"},
+        {"role": "user", "content": "Latest task"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "x"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}]},
+    ]
+
+    trimmed = messages_for_upstream_thread(messages, "thread_123")
+
+    assert trimmed == [
+        {"role": "user", "content": "Latest task"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "x"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}]},
+    ]
+
+
 def test_messages_for_upstream_thread_keeps_full_history_when_disabled(monkeypatch):
     monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "false")
     messages = [
