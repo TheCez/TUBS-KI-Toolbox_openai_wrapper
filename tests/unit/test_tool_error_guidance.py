@@ -55,3 +55,40 @@ def test_guidance_for_tool_successes_adds_task_completion_hint_for_file_write():
     assert "Wrapper completion hint:" in joined
     assert "mark the related task or todo as completed" in joined
     assert "successful file operation on `fibonacci.py`" in joined
+
+
+def test_guidance_for_tool_successes_suppresses_completion_hint_when_edit_failures_exist():
+    results = [
+        {
+            "is_error": True,
+            "text": (
+                "Update(C:\\personal\\portfolio\\cowork_test_project\\src\\components\\SiteShell.tsx)\n"
+                "Error: String to replace not found in file.\n"
+                "String: import { Outlet } from 'react-router-dom';"
+            ),
+        },
+        {
+            "is_error": False,
+            "text": "Wrote 96 lines to server.js",
+        },
+    ]
+
+    success_hints = guidance_for_tool_successes(results)
+    error_hints = guidance_for_tool_errors(results)
+
+    assert success_hints == []
+    joined = "\n".join(error_hints)
+    assert "Do not report task completion yet" in joined
+
+
+def test_guidance_for_tool_successes_ignores_plain_build_success_logs():
+    hints = guidance_for_tool_successes(
+        [
+            {
+                "is_error": False,
+                "text": "vite v5.4.21 building for production... built in 2.12s",
+            }
+        ]
+    )
+
+    assert hints == []

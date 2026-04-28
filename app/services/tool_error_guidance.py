@@ -15,6 +15,13 @@ _SUCCESS_OPERATION_RE = re.compile(
     r"\b(write|wrote|written|create|created|add|added|update|updated|edit|edited|modify|modified|saved)\b",
     re.IGNORECASE,
 )
+_EDIT_FAILURE_MARKERS = (
+    "string to replace not found in file",
+    "error writing file",
+    "failed to apply patch",
+    "target file not found",
+)
+_BUILD_SUCCESS_RE = re.compile(r"\b(build|built|compiled|compile|transformed)\b", re.IGNORECASE)
 
 
 def _extract_file_path(text: str) -> str | None:
@@ -65,9 +72,12 @@ def guidance_for_tool_errors(tool_results: Iterable[dict]) -> list[str]:
     hints: list[str] = []
     saw_string_replace_error = False
     saw_write_error = False
+    saw_mixed_success_and_failure = False
     metadata_hints: list[str] = []
+    cached_results = list(tool_results)
+    saw_any_success = any(not result.get("is_error") and (result.get("text") or "").strip() for result in cached_results)
 
-    for result in tool_results:
+    for result in cached_results:
         if not result.get("is_error"):
             continue
         raw_text = result.get("text") or ""
@@ -80,6 +90,8 @@ def guidance_for_tool_errors(tool_results: Iterable[dict]) -> list[str]:
             saw_string_replace_error = True
         if "error writing file" in text:
             saw_write_error = True
+        if saw_any_success and any(marker in text for marker in _EDIT_FAILURE_MARKERS):
+            saw_mixed_success_and_failure = True
 
     if saw_string_replace_error:
         hints.append(
@@ -94,18 +106,33 @@ def guidance_for_tool_errors(tool_results: Iterable[dict]) -> list[str]:
             "and prefer a minimal edit over rewriting a large block."
         )
 
+    if saw_mixed_success_and_failure:
+        hints.append(
+            "Wrapper repair hint: some requested edits failed even though another tool step succeeded. "
+            "Do not report task completion yet. Re-read the affected files, repair the failed edits, and only summarize success after the requested code changes actually apply."
+        )
+
     return hints + list(dict.fromkeys(metadata_hints))
 
 
 def guidance_for_tool_successes(tool_results: Iterable[dict]) -> list[str]:
+    cached_results = list(tool_results)
+    if any(
+        result.get("is_error") and any(marker in ((result.get("text") or "").lower()) for marker in _EDIT_FAILURE_MARKERS)
+        for result in cached_results
+    ):
+        return []
+
     hints: list[str] = []
     metadata_hints: list[str] = []
 
-    for result in tool_results:
+    for result in cached_results:
         if result.get("is_error"):
             continue
         raw_text = (result.get("text") or "").strip()
         if not raw_text:
+            continue
+        if _BUILD_SUCCESS_RE.search(raw_text) and not _SUCCESS_OPERATION_RE.search(raw_text):
             continue
         if not _SUCCESS_OPERATION_RE.search(raw_text):
             continue
