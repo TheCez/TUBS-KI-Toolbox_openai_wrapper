@@ -66,7 +66,7 @@ def test_context_tool_metadata_marks_tools_as_optional_rag_helpers():
     )
     assert "optional" in search_tool["function"]["description"].lower()
     assert "rag" in search_tool["function"]["description"].lower()
-    assert "optional durable memory retrieval helpers" in context_tool_instruction().lower()
+    assert "optional wrapper memory tools" in context_tool_instruction().lower()
 
 
 def test_get_context_by_ids_is_bounded_for_prompt_safety(monkeypatch):
@@ -162,6 +162,34 @@ async def test_chat_completions_resolves_wrapper_context_tool(monkeypatch):
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "Use the earlier anchored edit decision for SectionCard.tsx."
     assert calls["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_skips_wrapper_context_tools_without_stored_state(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "search_context" not in (payload.get("customInstructions") or "")
+        return {
+            "type": "done",
+            "response": "Fresh answer",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "Hello on a fresh thread"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "Fresh answer"
 
 
 def test_prompt_budget_accounts_for_large_instruction_overhead(monkeypatch):

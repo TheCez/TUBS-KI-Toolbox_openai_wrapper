@@ -173,6 +173,15 @@ def merge_tools(user_tools: Iterable[Any] | None, *, anthropic: bool = False) ->
     return merged
 
 
+def should_offer_context_tools(thread_id: str | None) -> bool:
+    if not _enabled() or not thread_id:
+        return False
+    store = context_store()
+    if store.get_hot_snapshot(thread_id) is not None:
+        return True
+    return bool(store.recent(thread_id, 1))
+
+
 def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
     store = context_store()
     if name == "search_context":
@@ -287,9 +296,9 @@ def context_tool_instruction() -> str:
     if not _enabled():
         return ""
     return (
-        "Wrapper context tools are available as optional durable memory retrieval helpers. "
-        "Use them only when prior goals, tool failures, file facts, decisions, or older thread context may materially help the answer. "
-        "Treat `search_context` as semantic RAG-style lookup, then use `get_context_by_ids` or `get_thread_state` if you need exact records or the current working snapshot. "
-        "If the current prompt already contains enough information, answer directly without calling these tools. "
-        "Do not combine wrapper context tools with external user tools in the same response; fetch context first, then continue."
+        "Optional wrapper memory tools are available for older thread context. "
+        "Use them only if prior goals, decisions, file facts, or failures materially matter. "
+        "Prefer answering directly when the current prompt is enough. "
+        "If needed, use `search_context` first, then `get_context_by_ids` or `get_thread_state`. "
+        "Resolve wrapper context tools before emitting external tool calls."
     )

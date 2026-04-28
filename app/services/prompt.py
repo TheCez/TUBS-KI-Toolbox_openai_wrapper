@@ -4,8 +4,6 @@ Centralizes tool-calling instructions, stop-sequence truncation, and XML parsing
 """
 
 import re
-import json
-import uuid
 from typing import Any, List, Optional, Tuple
 
 
@@ -57,16 +55,15 @@ def _format_tool_requirements(tools_dicts: list[dict[str, Any]]) -> str:
         line = f"- {name}"
         if description:
             line += f": {description}"
-        lines.append(line)
-
-        if required:
-            lines.append(f"  Required arguments: {', '.join(str(item) for item in required)}")
+        requirement_text = ", ".join(str(item) for item in required) if required else "none"
+        argument_names = list(properties.keys()) if isinstance(properties, dict) else []
+        if argument_names:
+            available_text = ", ".join(str(key) for key in argument_names[:8])
+            if len(argument_names) > 8:
+                available_text += ", ..."
         else:
-            lines.append("  Required arguments: none")
-
-        if isinstance(properties, dict) and properties:
-            property_names = ", ".join(str(key) for key in properties.keys())
-            lines.append(f"  Available arguments: {property_names}")
+            available_text = "none"
+        lines.append(f"{line} | required: {requirement_text} | args: {available_text}")
 
     return "\n".join(lines)
 
@@ -84,39 +81,18 @@ def build_tool_instructions(tools: list) -> str:
         else:
             tools_dicts.append(t)
 
-    tools_str = json.dumps(tools_dicts)
     tools_summary = _format_tool_requirements(tools_dicts)
     return (
-        "You have access to the tools provided in the current request. "
-        "To use any tool, you MUST follow this XML format. If you need to trigger "
-        "multiple tools simultaneously, you MUST wrap them in a <tool_calls> root "
-        "element and output all of them back-to-back before stopping. "
-        "If you decide to use a tool, emit the XML tool call and stop immediately. "
-        "Do not add any assistant prose before or after the tool-call XML. "
-        "Use this EXACT format:\n"
+        "Tools are available in this request. Call them only when needed.\n"
+        "If you call a tool, output only XML and stop immediately.\n"
+        "Format:\n"
         '<tool_calls><tool_call><name>tool_name</name>'
         '<arguments>{"actual_key": "actual_value"}</arguments>'
         "</tool_call></tool_calls>\n"
-        "The <arguments> MUST contain raw, valid JSON that perfectly matches the "
-        'provided tool schema. DO NOT wrap the arguments inside a {"json": ...} '
-        "parent object.\n"
-        "CRITICAL RULES:\n"
-        "1. When outputting XML tags like <tool_call>, <name>, or </arguments>, "
-        "do not escape the forward slash. Output raw XML tags only.\n"
-        "2. Ensure the JSON inside <arguments> is valid, single-line or properly "
-        "escaped, and contains no trailing commas or unescaped characters that "
-        "could break a json.loads() call. Be extremely precise with newlines and "
-        "special characters.\n"
-        '3. Your output must contain ONLY the XML blocks. No conversational filler '
-        'like "Here is your code" before or after the <tool_calls> tag, as this '
-        "can confuse the client parser.\n"
-        "4. Never call a tool with an empty or incomplete arguments object when the "
-        "schema requires fields. If you do not have the required arguments, do not "
-        "call the tool yet.\n"
-        "5. Match the argument keys exactly to the schema. Do not rename keys, wrap "
-        "them in extra objects, or omit required arrays/objects.\n"
-        f"Tool requirements summary:\n{tools_summary}\n"
-        f"Available tools: {tools_str}\n"
+        "Use the exact tool name and raw JSON arguments matching the schema.\n"
+        "Do not add prose around the XML.\n"
+        "Do not call a tool with missing required fields.\n"
+        f"Tool summary:\n{tools_summary}\n"
     )
 
 

@@ -78,6 +78,8 @@ Practical meaning:
 - Compaction is a true overflow fallback, not the default path.
 - If you want compaction to begin around a `10k` upstream ceiling, set `TUBS_MAX_PROMPT_TOKENS` and `TUBS_THREAD_PROMPT_TOKENS` just under that ceiling, for example `9000`.
 - The wrapper now also budgets for `customInstructions` overhead before compacting the prompt. That means tool schemas, reasoning directives, and wrapper hints are counted as part of the real upstream request budget instead of being ignored.
+- Tool-call instructions are now deliberately compact. The wrapper no longer dumps full tool schemas into `customInstructions`; it keeps only a short XML contract plus a compact required-arguments summary so more real prompt context survives before compaction.
+- Reasoning effort and max-output guidance are also emitted in a shorter form to reduce instruction overhead on every request.
 
 Useful related knobs:
 
@@ -106,12 +108,13 @@ environment:
 How it works:
 - Redis stores a small hot snapshot for each logical wrapper thread: current objective, plan, blockers, recent decisions, and recent failures.
 - Postgres + `pgvector` stores durable memory records such as goals, constraints, tool failures, file facts, code summaries, and assistant decisions.
-- Non-streaming chat, responses, and Anthropic requests automatically expose wrapper-owned context tools like `search_context`, `get_context_by_ids`, and `get_thread_state`.
+- Non-streaming chat, responses, and Anthropic requests expose wrapper-owned context tools like `search_context`, `get_context_by_ids`, and `get_thread_state` only when the wrapper already has durable state worth retrieving for that logical thread.
 - The wrapper resolves those context tool calls locally, then asks the model to continue with the retrieved context, so only relevant history comes back into the prompt.
 - These tools are presented to the model as optional retrieval helpers, not mandatory steps. The model should answer directly when the current prompt already contains enough information.
 - `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
 - The wrapper also injects targeted planner hints from tool results: repair hints for failed edits, and completion hints for successful file writes/edits so agents are more likely to explicitly close related tasks or todos.
 - Context retrieval payloads are bounded before they go back into the next model turn. Search results, exact-record fetches, and thread-state responses are truncated and capped so retrieval itself does not become the next source of prompt bloat.
+- Wrapper context-tool instructions are also kept short and only added when those tools are actually exposed, so fresh chats do not pay a context-RAG instruction penalty they cannot use.
 
 Useful related knobs:
 

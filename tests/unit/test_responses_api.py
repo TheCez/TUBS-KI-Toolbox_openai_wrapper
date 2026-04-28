@@ -297,8 +297,8 @@ async def test_responses_streaming_hides_tool_xml_and_emits_function_call(monkey
 async def test_responses_reasoning_is_added_to_custom_instructions(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         instructions = payload["customInstructions"]
-        assert "Reason carefully and thoroughly before answering." in instructions
-        assert "Keep the final answer within roughly 300 tokens" in instructions
+        assert "Reason thoroughly. Prefer correctness over brevity." in instructions
+        assert "Target at most about 300 tokens." in instructions
         return {
             "type": "done",
             "response": "Detailed answer",

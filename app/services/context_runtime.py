@@ -10,7 +10,13 @@ from app.models.openai import Message, ToolCall, ToolCallFunction
 from app.services.anthropic_translation import compile_anthropic_messages_to_prompt, get_images_from_anthropic_messages
 from app.services.conversation_state import build_prompt_with_compaction
 from app.services.context_store import context_store
-from app.services.context_tools import context_tool_instruction, execute_context_tool, is_context_tool, merge_tools
+from app.services.context_tools import (
+    context_tool_instruction,
+    execute_context_tool,
+    is_context_tool,
+    merge_tools,
+    should_offer_context_tools,
+)
 from app.services.openai_bridge import (
     build_custom_instructions,
     build_tubs_payload_from_messages,
@@ -104,7 +110,8 @@ async def resolve_openai_context_tools(
     tool_choice: str | dict[str, Any] | None,
     send_request: SendRequest,
 ) -> LocalContextResolution:
-    effective_tools = merge_tools(tools, anthropic=False)
+    enable_context_tools = should_offer_context_tools(context_thread_id)
+    effective_tools = merge_tools(tools, anthropic=False) if enable_context_tools else list(tools or [])
     working_messages = list(messages)
     current_thread_id = thread_id
     used_context_tools = False
@@ -114,7 +121,9 @@ async def resolve_openai_context_tools(
             model=model,
             messages=working_messages,
             thread_id=current_thread_id,
-            instructions="\n\n".join(part for part in [instructions, context_tool_instruction()] if part) or None,
+            instructions="\n\n".join(
+                part for part in [instructions, context_tool_instruction() if enable_context_tools else ""] if part
+            ) or None,
             response_format=response_format,
             tools=effective_tools,
             reasoning=reasoning,
@@ -188,7 +197,8 @@ async def resolve_anthropic_context_tools(
     reasoning: Any,
     send_request: SendRequest,
 ) -> LocalContextResolution:
-    effective_tools = merge_tools(tools, anthropic=True)
+    enable_context_tools = should_offer_context_tools(context_thread_id)
+    effective_tools = merge_tools(tools, anthropic=True) if enable_context_tools else list(tools or [])
     working_messages = list(messages)
     current_thread_id = thread_id
     used_context_tools = False
@@ -197,7 +207,11 @@ async def resolve_anthropic_context_tools(
         prompt = compile_anthropic_messages_to_prompt(working_messages)
         custom_instructions = build_custom_instructions(
             messages=[],
-            instructions="\n\n".join(part for part in [system_instructions, context_tool_instruction()] if part) or None,
+            instructions="\n\n".join(
+                part
+                for part in [system_instructions, context_tool_instruction() if enable_context_tools else ""]
+                if part
+            ) or None,
             tools=effective_tools,
             reasoning=reasoning,
             max_output_tokens=max_output_tokens,

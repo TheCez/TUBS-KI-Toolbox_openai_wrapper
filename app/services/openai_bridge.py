@@ -152,40 +152,38 @@ def build_custom_instructions(
         elif format_type == "json_schema":
             schema = response_format.get("json_schema", {})
             blocks.append(
-                "You must strictly adhere to the following JSON schema for your output. "
-                f"Output only valid JSON.\nSchema: {json.dumps(schema)}"
+                "Output only valid JSON matching this schema.\n"
+                f"Schema: {json.dumps(schema, separators=(',', ':'))}"
             )
 
     if tools:
         blocks.append(build_tool_instructions(list(tools)))
         if isinstance(tool_choice, ResponseFunctionToolChoice):
             blocks.append(
-                f"You must call the tool named '{tool_choice.name}' and stop immediately after emitting the tool call."
+                f"Call the tool '{tool_choice.name}' and stop after the XML."
             )
         elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
             function_name = tool_choice.get("function", {}).get("name")
             if function_name:
                 blocks.append(
-                    f"You must call the tool named '{function_name}' and stop immediately after emitting the tool call."
+                    f"Call the tool '{function_name}' and stop after the XML."
                 )
         elif tool_choice == "required":
-            blocks.append("You must call at least one tool and stop immediately after emitting the tool call.")
+            blocks.append("Call at least one tool and stop after the XML.")
         elif tool_choice == "none":
             blocks.append("Do not call any tools in this response.")
 
     if reasoning and reasoning.effort and reasoning.effort != "none":
         effort_instructions = {
-            "low": "Think briefly before answering, but do not over-compress the final response.",
-            "medium": "Reason carefully before answering and provide enough detail to fully address the request.",
-            "high": "Reason carefully and thoroughly before answering. Prefer correctness and completeness over brevity.",
-            "xhigh": "Reason very carefully and comprehensively before answering. Provide a detailed and well-supported final response.",
+            "low": "Think briefly, then answer clearly.",
+            "medium": "Reason carefully, then answer clearly.",
+            "high": "Reason thoroughly. Prefer correctness over brevity.",
+            "xhigh": "Reason very thoroughly. Be comprehensive and well-supported.",
         }
         blocks.append(effort_instructions[reasoning.effort])
 
     if max_output_tokens and max_output_tokens > 0:
-        blocks.append(
-            f"Keep the final answer within roughly {max_output_tokens} tokens while still fully answering the request."
-        )
+        blocks.append(f"Target at most about {max_output_tokens} tokens.")
 
     combined = "\n\n".join(block for block in blocks if block and block.strip()).strip()
     return combined or None

@@ -15,7 +15,7 @@ async def _collect_sse_chunks(response) -> list[str]:
 async def test_anthropic_accepts_compat_fields(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "Do not call any tools in this response." in payload["customInstructions"]
-        assert "Reason carefully before answering and provide enough detail to fully address the request." in payload["customInstructions"]
+        assert "Reason carefully, then answer clearly." in payload["customInstructions"]
         return {
             "type": "done",
             "response": "Plain answer",
@@ -48,10 +48,9 @@ async def test_anthropic_accepts_compat_fields(monkeypatch):
 async def test_anthropic_tool_instructions_include_required_argument_summary(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         instructions = payload["customInstructions"]
-        assert "Tool requirements summary:" in instructions
-        assert "- AskUserQuestion: Ask the user a question" in instructions
-        assert "Required arguments: questions" in instructions
-        assert "Never call a tool with an empty or incomplete arguments object" in instructions
+        assert "Tool summary:" in instructions
+        assert "- AskUserQuestion: Ask the user a question | required: questions | args: questions" in instructions
+        assert "Do not call a tool with missing required fields." in instructions
         return {
             "type": "done",
             "response": "Plain answer",

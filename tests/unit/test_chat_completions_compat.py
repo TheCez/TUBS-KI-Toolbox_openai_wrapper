@@ -15,7 +15,7 @@ async def _collect_sse_chunks(response) -> list[str]:
 @pytest.mark.asyncio
 async def test_chat_completions_accepts_extra_compat_fields(monkeypatch):
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
-        assert "Keep the final answer within roughly 120 tokens" in payload["customInstructions"]
+        assert "Target at most about 120 tokens." in payload["customInstructions"]
         assert "Do not call any tools in this response." in payload["customInstructions"]
         return {
             "type": "done",
