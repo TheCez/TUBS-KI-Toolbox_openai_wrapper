@@ -14,6 +14,8 @@ from app.services.translation import extract_text_from_content, extract_tool_res
 
 _PATH_RE = re.compile(r"[A-Za-z]:\\[^\r\n]+|/[^\r\n]+")
 _SYMBOL_RE = re.compile(r"\b(?:const|function|class|def|async def)\s+([A-Za-z_][A-Za-z0-9_]*)|<([A-Z][A-Za-z0-9_]*)\b")
+_LABEL_RE = re.compile(r"^\s*[•\-\*]?\s*(name|my name|creature|vibe|emoji)\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_EXACT_REPLY_RE = re.compile(r"reply(?: with exactly)?\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
 
 
 def _message_role(message: Any) -> str:
@@ -62,6 +64,63 @@ def _is_goal_text(text: str) -> bool:
 
 def _digest(thread_id: str, kind: str, summary: str) -> str:
     return hashlib.sha256(f"{thread_id}|{kind}|{summary}".encode("utf-8")).hexdigest()
+
+
+def _identity_updates(text: str) -> dict[str, str]:
+    updates: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _LABEL_RE.match(line)
+        if not match:
+            continue
+        field = match.group(1).strip().lower()
+        value = match.group(2).strip()
+        if field == "my name":
+            updates["user_name"] = value
+        elif field == "name":
+            updates["assistant_name"] = value
+        elif field == "creature":
+            updates["assistant_creature"] = value
+        elif field == "vibe":
+            updates["assistant_vibe"] = value
+        elif field == "emoji":
+            updates["assistant_emoji"] = value
+    return updates
+
+
+def _bootstrap_prompt_detected(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "pick anything you like for these four" in lowered
+        or "mid-bootstrap" in lowered
+        or "bootstrap-pending" in lowered
+        or ("my name" in lowered and "creature" in lowered and "vibe" in lowered and "emoji" in lowered and "reply" in lowered)
+    )
+
+
+def _expected_reply(text: str) -> str | None:
+    match = _EXACT_REPLY_RE.search(text)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if "\n" in value:
+        value = value.splitlines()[0].strip()
+    return value or None
+
+
+def _build_hidden_bridge(latest_user_text: str | None, response_text: str | None, recent_messages: list[str]) -> str | None:
+    bridge_parts: list[str] = []
+    if latest_user_text:
+        bridge_parts.append(f"Latest user intent: {latest_user_text[:220]}")
+    if response_text:
+        bridge_parts.append(f"Latest assistant direction: {response_text[:220]}")
+    if recent_messages:
+        bridge_parts.append("Recent turns: " + " | ".join(recent_messages[-3:]))
+    if not bridge_parts:
+        return None
+    return "\n".join(bridge_parts)[:900]
 
 
 class ContextIngestService:
@@ -218,16 +277,66 @@ class ContextIngestService:
             snapshot.current_objective = latest_user_text[:300]
             if latest_user_text.lower().startswith(("1.", "- ", "* ")):
                 snapshot.current_plan = [part for part in summarize_text_chunks(latest_user_text, per_chunk_chars=120, max_chunks=4)]
+            snapshot.active_workflow.current_goal = latest_user_text[:300]
+            if snapshot.active_workflow.kind is None:
+                snapshot.active_workflow.kind = "general_chat"
+            if snapshot.active_workflow.status is None:
+                snapshot.active_workflow.status = "active"
 
         if tool_failures:
             merged_failures = snapshot.latest_tool_failures + [item[:240] for item in tool_failures]
             snapshot.latest_tool_failures = list(dict.fromkeys(merged_failures))[-4:]
             snapshot.unresolved_blockers = snapshot.latest_tool_failures[:]
+            snapshot.active_workflow.blocked_on_user = False
 
         if response_text and any(token in response_text.lower() for token in ["decide", "recommend", "should", "will"]):
             snapshot.recent_decisions = list(dict.fromkeys(snapshot.recent_decisions + [response_text[:220]]))[-4:]
 
+        combined_texts = [text for text in [latest_user_text, response_text] if text]
+        for text in combined_texts:
+            updates = _identity_updates(text)
+            if updates.get("user_name"):
+                snapshot.user_identity.name = updates["user_name"]
+            if updates.get("assistant_name"):
+                snapshot.assistant_identity.name = updates["assistant_name"]
+            if updates.get("assistant_creature"):
+                snapshot.assistant_identity.creature = updates["assistant_creature"]
+            if updates.get("assistant_vibe"):
+                snapshot.assistant_identity.vibe = updates["assistant_vibe"]
+            if updates.get("assistant_emoji"):
+                snapshot.assistant_identity.emoji = updates["assistant_emoji"]
+            if _bootstrap_prompt_detected(text):
+                snapshot.bootstrap_state.status = "pending"
+                snapshot.bootstrap_state.pending_step = "identity_confirmation"
+                snapshot.bootstrap_state.required_fields = ["name", "creature", "vibe", "emoji"]
+                expected = _expected_reply(text)
+                if expected:
+                    snapshot.bootstrap_state.last_exact_expected_reply = expected
+                snapshot.active_workflow.kind = "bootstrap"
+                snapshot.active_workflow.status = "awaiting_identity"
+                snapshot.active_workflow.blocked_on_user = True
+
+        answered_fields: list[str] = []
+        if snapshot.assistant_identity.name:
+            answered_fields.append("name")
+        if snapshot.assistant_identity.creature:
+            answered_fields.append("creature")
+        if snapshot.assistant_identity.vibe:
+            answered_fields.append("vibe")
+        if snapshot.assistant_identity.emoji:
+            answered_fields.append("emoji")
+        snapshot.bootstrap_state.answered_fields = answered_fields
+        if answered_fields and snapshot.bootstrap_state.status in {"pending", "unknown"}:
+            snapshot.bootstrap_state.status = "answered"
+        if len(answered_fields) == 4:
+            snapshot.bootstrap_state.status = "completed"
+            snapshot.bootstrap_state.pending_step = None
+            snapshot.active_workflow.kind = "general_chat"
+            snapshot.active_workflow.status = "active"
+            snapshot.active_workflow.blocked_on_user = False
+
         snapshot.recent_messages = recent_messages[-6:]
+        snapshot.hidden_bridge_summary = _build_hidden_bridge(latest_user_text, response_text, snapshot.recent_messages)
         snapshot.updated_at = now
         self._store.set_hot_snapshot(snapshot)
 

@@ -165,6 +165,24 @@ def _snapshot_summary(thread_id: str) -> str | None:
     if snapshot is None:
         return None
     lines = []
+    if snapshot.user_identity.name:
+        lines.append(f"User name: {snapshot.user_identity.name}")
+    if snapshot.assistant_identity.name:
+        lines.append(f"Assistant name: {snapshot.assistant_identity.name}")
+    if snapshot.assistant_identity.creature:
+        lines.append(f"Assistant creature: {snapshot.assistant_identity.creature}")
+    if snapshot.assistant_identity.vibe:
+        lines.append(f"Assistant vibe: {snapshot.assistant_identity.vibe}")
+    if snapshot.assistant_identity.emoji:
+        lines.append(f"Assistant emoji: {snapshot.assistant_identity.emoji}")
+    if snapshot.bootstrap_state.status != "unknown":
+        lines.append(f"Bootstrap status: {snapshot.bootstrap_state.status}")
+    if snapshot.bootstrap_state.last_exact_expected_reply and snapshot.bootstrap_state.status != "completed":
+        lines.append(f"Expected exact bootstrap reply: {snapshot.bootstrap_state.last_exact_expected_reply}")
+    if snapshot.active_workflow.kind:
+        lines.append(f"Active workflow: {snapshot.active_workflow.kind}")
+    if snapshot.active_workflow.status:
+        lines.append(f"Workflow status: {snapshot.active_workflow.status}")
     if snapshot.current_objective:
         lines.append(f"Current objective: {snapshot.current_objective}")
     if snapshot.current_plan:
@@ -177,9 +195,43 @@ def _snapshot_summary(thread_id: str) -> str | None:
         lines.append("Latest tool failures: " + " | ".join(snapshot.latest_tool_failures[:2]))
     if snapshot.recent_messages:
         lines.append("Recent raw turns: " + " | ".join(snapshot.recent_messages[-3:]))
+    if snapshot.hidden_bridge_summary:
+        lines.append(f"Hidden bridge: {snapshot.hidden_bridge_summary}")
     if not lines:
         return None
     return "Durable thread state summary:\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def pinned_state_instruction(thread_id: str) -> str | None:
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    if snapshot is None:
+        return None
+    lines: list[str] = []
+    if snapshot.user_identity.name:
+        lines.append(f"User name: {snapshot.user_identity.name}")
+    if snapshot.assistant_identity.name:
+        lines.append(f"Assistant name: {snapshot.assistant_identity.name}")
+    if snapshot.assistant_identity.creature:
+        lines.append(f"Assistant creature: {snapshot.assistant_identity.creature}")
+    if snapshot.assistant_identity.vibe:
+        lines.append(f"Assistant vibe: {snapshot.assistant_identity.vibe}")
+    if snapshot.assistant_identity.emoji:
+        lines.append(f"Assistant emoji: {snapshot.assistant_identity.emoji}")
+    if snapshot.bootstrap_state.status != "unknown":
+        lines.append(f"Bootstrap status: {snapshot.bootstrap_state.status}")
+    if snapshot.bootstrap_state.status == "completed":
+        lines.append("Do not ask bootstrap identity questions again unless explicitly reset.")
+    elif snapshot.bootstrap_state.last_exact_expected_reply:
+        lines.append(f"If completing bootstrap, exact expected reply: {snapshot.bootstrap_state.last_exact_expected_reply}")
+    if snapshot.active_workflow.kind:
+        lines.append(f"Active workflow kind: {snapshot.active_workflow.kind}")
+    if snapshot.active_workflow.status:
+        lines.append(f"Active workflow status: {snapshot.active_workflow.status}")
+    if snapshot.hidden_bridge_summary:
+        lines.append(f"Bridge state: {snapshot.hidden_bridge_summary}")
+    if not lines:
+        return None
+    return "Pinned thread state:\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def augment_openai_messages_with_context(messages: Sequence[Message], thread_id: str) -> list[Message]:

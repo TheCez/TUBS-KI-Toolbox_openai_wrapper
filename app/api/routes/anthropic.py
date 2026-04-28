@@ -27,6 +27,7 @@ from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
     _is_low_information_final_text,
     augment_anthropic_messages_with_context,
+    pinned_state_instruction,
     resolve_anthropic_context_tools,
     _overflow_active_for_anthropic_messages,
 )
@@ -122,6 +123,7 @@ async def anthropic_messages(
 
     async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
         thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
+        pinned_instruction = pinned_state_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -138,7 +140,9 @@ async def anthropic_messages(
         overflow_mode = staged.applied or _overflow_active_for_anthropic_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            system_instructions="\n\n".join(part for part in ["\n".join(system_messages).strip() or None, retry_note] if part) or None,
+            system_instructions="\n\n".join(
+                part for part in [pinned_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
+            ) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
             tool_choice=_tool_choice_to_openai_style(body.tool_choice),
@@ -152,7 +156,9 @@ async def anthropic_messages(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            system_instructions="\n\n".join(part for part in ["\n".join(system_messages).strip() or None, retry_note] if part) or None,
+            system_instructions="\n\n".join(
+                part for part in [pinned_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
+            ) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
             tool_choice=_tool_choice_to_openai_style(body.tool_choice),
@@ -164,6 +170,7 @@ async def anthropic_messages(
 
     if body.stream:
         thread_id = get_cached_thread_id(conversation_key)
+        pinned_instruction = pinned_state_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -180,7 +187,7 @@ async def anthropic_messages(
         images = get_images_from_anthropic_messages(effective_messages)
         custom_instructions = build_custom_instructions(
             messages=[],
-            instructions="\n".join(system_messages).strip() or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, "\n".join(system_messages).strip() or None] if part) or None,
             tools=body.tools,
             reasoning=_thinking_to_reasoning(body.thinking),
             max_output_tokens=body.max_tokens,

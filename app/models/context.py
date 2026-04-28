@@ -81,10 +81,49 @@ class SummarizeContextWindowArgs(BaseModel):
     top_k: int = 8
 
 
+class PinnedUserIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+
+
+class PinnedAssistantIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    creature: str | None = None
+    vibe: str | None = None
+    emoji: str | None = None
+
+
+class BootstrapState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["unknown", "pending", "answered", "completed"] = "unknown"
+    pending_step: str | None = None
+    required_fields: list[str] = Field(default_factory=list)
+    answered_fields: list[str] = Field(default_factory=list)
+    last_exact_expected_reply: str | None = None
+
+
+class ActiveWorkflowState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str | None = None
+    status: str | None = None
+    current_goal: str | None = None
+    blocked_on_user: bool = False
+
+
 class HotContextSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     thread_id: str
+    user_identity: PinnedUserIdentity = Field(default_factory=PinnedUserIdentity)
+    assistant_identity: PinnedAssistantIdentity = Field(default_factory=PinnedAssistantIdentity)
+    bootstrap_state: BootstrapState = Field(default_factory=BootstrapState)
+    active_workflow: ActiveWorkflowState = Field(default_factory=ActiveWorkflowState)
+    hidden_bridge_summary: str | None = None
     current_objective: str | None = None
     current_plan: list[str] = Field(default_factory=list)
     unresolved_blockers: list[str] = Field(default_factory=list)

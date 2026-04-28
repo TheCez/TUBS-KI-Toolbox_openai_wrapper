@@ -8,6 +8,7 @@ from app.models.openai import Message
 from app.services.context_ingest import context_ingest_service
 from app.services.context_store import reset_context_store
 from app.services.context_tools import context_tool_instruction, context_tools_for_openai, execute_context_tool
+from app.services.context_runtime import pinned_state_instruction
 from app.services.openai_bridge import build_tubs_payload_from_messages
 from app.services.conversation_state import build_conversation_key, reset_thread_cache
 
@@ -58,6 +59,52 @@ def test_context_tools_search_and_get_state():
     )
     assert state_payload["state"]["current_objective"].startswith("I want to fix PrimaryButton.tsx")
     assert state_payload["state"]["recent_messages"]
+
+
+def test_pinned_state_extracts_identity_and_bootstrap_completion():
+    service = context_ingest_service()
+    thread_id = "thread-bootstrap"
+    service.ingest_turn(
+        thread_id,
+        [
+            {
+                "role": "user",
+                "content": (
+                    "I’m mid-bootstrap and waiting on you.\n"
+                    "Pick anything you like for these four:\n"
+                    "• my name\n• what kind of creature I am\n• my vibe\n• my emoji\n"
+                    "Reply:\nyes, call me Ajay"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Name : Jarvis\n"
+                    "Creature : Friendly and fun helper\n"
+                    "Vibe: cool fun and helpful\n"
+                    "Emoji: 😎\n"
+                    "My name : Ajay"
+                ),
+            },
+        ],
+        response_text="Bootstrap acknowledged.",
+    )
+
+    state_payload = json.loads(
+        execute_context_tool(
+            "get_thread_state",
+            json.dumps({"include_recent_messages": False}),
+            thread_id,
+        )
+    )
+    state = state_payload["state"]
+    assert state["user_identity"]["name"] == "Ajay"
+    assert state["assistant_identity"]["name"] == "Jarvis"
+    assert state["assistant_identity"]["creature"] == "Friendly and fun helper"
+    assert state["bootstrap_state"]["status"] == "completed"
+    instruction = pinned_state_instruction(thread_id) or ""
+    assert "Assistant name: Jarvis" in instruction
+    assert "Do not ask bootstrap identity questions again" in instruction
 
 
 def test_context_tool_metadata_marks_tools_as_optional_rag_helpers():
@@ -190,6 +237,55 @@ async def test_chat_completions_skips_wrapper_context_tools_without_stored_state
 
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "Fresh answer"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_includes_pinned_state_instruction(monkeypatch):
+    service = context_ingest_service()
+    explicit_user = "thread-pinned-route"
+    conversation_key = build_conversation_key(
+        bearer_token="test-token",
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Hi"}],
+        explicit_user=explicit_user,
+    )
+    service.ingest_turn(
+        conversation_key,
+        [
+            {
+                "role": "user",
+                "content": "Name : Jarvis\nCreature : helpful machine familiar\nVibe: warm and sharp\nEmoji: 😎\nMy name : Ajay",
+            }
+        ],
+        response_text="Identity stored.",
+    )
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Pinned thread state:" in payload["customInstructions"]
+        assert "User name: Ajay" in payload["customInstructions"]
+        assert "Assistant name: Jarvis" in payload["customInstructions"]
+        return {
+            "type": "done",
+            "response": "Pinned answer",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "user": explicit_user,
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+
+    assert response.status_code == 200
 
 
 def test_prompt_budget_accounts_for_large_instruction_overhead(monkeypatch):

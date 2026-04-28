@@ -24,6 +24,7 @@ from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
     _is_low_information_final_text,
     augment_openai_messages_with_context,
+    pinned_state_instruction,
     resolve_openai_context_tools,
     _overflow_active_for_openai_messages,
 )
@@ -63,6 +64,7 @@ async def chat_completions(
 
     async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
         thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
+        pinned_instruction = pinned_state_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -79,7 +81,7 @@ async def chat_completions(
         overflow_mode = staged.applied or _overflow_active_for_openai_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            instructions=retry_note,
+            instructions="\n\n".join(part for part in [pinned_instruction, retry_note] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -94,7 +96,7 @@ async def chat_completions(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            instructions=retry_note,
+            instructions="\n\n".join(part for part in [pinned_instruction, retry_note] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -107,6 +109,7 @@ async def chat_completions(
 
     if body.stream:
         thread_id = get_cached_thread_id(conversation_key)
+        pinned_instruction = pinned_state_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -125,6 +128,7 @@ async def chat_completions(
             model=body.model,
             messages=effective_messages,
             thread_id=thread_id,
+            instructions=pinned_instruction,
             response_format=body.response_format,
             tools=body.tools,
             max_output_tokens=body.max_completion_tokens or body.max_tokens,

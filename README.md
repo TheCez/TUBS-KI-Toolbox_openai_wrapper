@@ -124,6 +124,7 @@ How it works:
 - The wrapper resolves those context tool calls locally, then asks the model to continue with the retrieved context, so only relevant history comes back into the prompt.
 - In normal requests, these tools are presented as optional retrieval helpers and the model should answer directly when the current prompt already contains enough information.
 - In overflow requests, the wrapper switches to a bounded retrieval protocol: it stores the incoming turn first, sends only compact bridge context upstream, and requires at least one wrapper context retrieval before it accepts a final answer or external tool call.
+- The wrapper now also maintains a pinned state layer for exact non-semantic thread facts such as user name, assistant identity, bootstrap status, workflow status, and a compact hidden bridge summary. This pinned state is injected on every request, including reused TU-BS thread requests, so exact state does not depend on upstream thread memory alone.
 - `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
 - The wrapper also injects targeted planner hints from tool results: repair hints for failed edits, and completion hints for successful file writes/edits so agents are more likely to explicitly close related tasks or todos.
 - Context retrieval payloads are bounded before they go back into the next model turn. Search results, exact-record fetches, and thread-state responses are truncated and capped so retrieval itself does not become the next source of prompt bloat.
@@ -146,6 +147,7 @@ Important behavior notes:
 - Overflow requests ingest the current turn before the first upstream TU-BS call so the model can retrieve it back through wrapper tools if compaction or thread slicing would otherwise hide important detail.
 - The overflow retrieval loop is bounded by `TUBS_CONTEXT_TOOL_LOOP_LIMIT`, and the wrapper only enforces it when context actually overflowed and durable state exists. If no overflow happens, or if the thread has no retrievable durable state, the wrapper returns the answer normally without entering the loop.
 - In overflow mode, the wrapper now also rejects low-information placeholder finals such as bootstrap filler or generic closure text after retrieval. It injects one more targeted retry note instead of accepting that response as the final answer.
+- Pinned thread state is kept separate from semantic retrieval memory. Identity/bootstrap/workflow state is stored structurally and injected on every turn, while semantic retrieval stays focused on older facts, file history, failures, and decisions.
 - Streaming requests still get the lightweight Redis-backed summary, but wrapper-owned context tools are only resolved on non-streaming requests in this version.
 - TU-BS thread memory is now a secondary helper. The primary long-horizon memory layer is the wrapper-owned durable context system.
 
