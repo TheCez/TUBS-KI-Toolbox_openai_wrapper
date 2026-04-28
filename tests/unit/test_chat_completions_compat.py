@@ -369,6 +369,7 @@ async def test_chat_completions_downgrades_invalid_tool_call_to_text(monkeypatch
 @pytest.mark.asyncio
 async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypatch):
     reset_thread_cache()
+    monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "false")
     monkeypatch.setenv("TUBS_KEEP_LAST_TURNS", "4")
     monkeypatch.setenv("TUBS_COMPACT_SUMMARY_CHARS", "1000")
     monkeypatch.setenv("TUBS_THREAD_PROMPT_TOKENS", "40")
@@ -429,6 +430,48 @@ async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypa
 
     assert first.status_code == 200
     assert second.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_reused_thread_sends_only_latest_turn_when_enabled(monkeypatch):
+    reset_thread_cache()
+    monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "true")
+    monkeypatch.setattr("app.api.routes.chat.get_cached_thread_id", lambda _key: "thread_123")
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert payload.get("thread") == "thread_123"
+        assert "[User]: How is my house?" in payload["prompt"]
+        assert "[User]: Hi my house is big" not in payload["prompt"]
+        assert "Harness rules." not in payload["prompt"]
+        assert payload["customInstructions"] == "Harness rules."
+        return {
+            "type": "done",
+            "response": "Your house is big.",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+            "thread": {"id": "thread_123"},
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [
+                    {"role": "developer", "content": "Harness rules."},
+                    {"role": "user", "content": "Hi my house is big"},
+                    {"role": "assistant", "content": "Noted."},
+                    {"role": "user", "content": "How is my house?"},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "Your house is big."
 
 
 @pytest.mark.asyncio

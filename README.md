@@ -54,6 +54,7 @@ If your upstream TU-BS deployment has a hard per-request limit such as `10k` pro
 environment:
   - TUBS_MAX_PROMPT_TOKENS=9000
   - TUBS_THREAD_PROMPT_TOKENS=9000
+  - TUBS_USE_UPSTREAM_THREADS=true
   - TUBS_KEEP_LAST_TURNS=8
   - TUBS_COMPACT_SUMMARY_CHARS=4000
   - TUBS_THREAD_SUMMARY_CHARS=1200
@@ -62,6 +63,7 @@ environment:
 
 - `TUBS_MAX_PROMPT_TOKENS` is the approximate prompt budget for requests that do not yet have a cached TU-BS thread.
 - `TUBS_THREAD_PROMPT_TOKENS` is the prompt budget used once the wrapper can rely on an existing TU-BS thread. In this version, it defaults to the same ceiling as `TUBS_MAX_PROMPT_TOKENS` unless you explicitly lower it.
+- `TUBS_USE_UPSTREAM_THREADS` controls whether the wrapper should actively reuse TU-BS threads for follow-up turns. It is `true` by default.
 - `TUBS_KEEP_LAST_TURNS` controls how many recent non-system messages are preserved before older context is compacted.
 - `TUBS_COMPACT_SUMMARY_CHARS` controls how much room is available for stateless summary replay.
 - `TUBS_THREAD_SUMMARY_CHARS` controls the compact bridge summary size when a TU-BS thread already exists.
@@ -81,6 +83,14 @@ Practical meaning:
 - Tool-call instructions are now deliberately compact. The wrapper no longer dumps full tool schemas into `customInstructions`; it keeps only a short XML contract plus a compact required-arguments summary so more real prompt context survives before compaction.
 - Reasoning effort and max-output guidance are also emitted in a shorter form to reduce instruction overhead on every request.
 - If TU-BS rejects a non-stream request with a conversation-level token-limit error such as `Sie haben das Token limit für dieses Gespräch überschritten.`, the wrapper now treats that as an exhausted upstream thread, drops the cached TU-BS thread for that logical conversation, clears any staged-ingestion progress tied to it, and retries once on a fresh TU-BS thread.
+
+When `TUBS_USE_UPSTREAM_THREADS=true` and a cached TU-BS thread already exists:
+- the wrapper sends only the latest live dialogue turn to TU-BS instead of replaying the full prior turn list
+- system/developer instructions still stay active through `customInstructions`
+- wrapper-owned durable context is used to bootstrap new or rotated TU-BS threads, but steady-state follow-ups stay as small as possible
+
+When `TUBS_USE_UPSTREAM_THREADS=false`:
+- the wrapper keeps the previous full-history replay behavior and uses prompt compaction to stay within budget
 
 Useful related knobs:
 

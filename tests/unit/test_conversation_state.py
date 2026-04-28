@@ -4,6 +4,7 @@ from app.services.conversation_state import (
     compact_messages,
     estimate_token_count,
     get_cached_thread_id,
+    messages_for_upstream_thread,
     remember_thread_id,
     reset_thread_cache,
 )
@@ -190,3 +191,33 @@ def test_build_prompt_with_compaction_iteratively_folds_old_blocks(monkeypatch):
     assert "Final request that must remain intact." in prompt
     assert estimate_token_count(prompt) <= 70
     assert "Request 1 detail" not in prompt
+
+
+def test_messages_for_upstream_thread_keeps_only_latest_dialogue_when_enabled(monkeypatch):
+    monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "true")
+    messages = [
+        {"role": "developer", "content": "Harness rules."},
+        {"role": "user", "content": "Hi my house is big"},
+        {"role": "assistant", "content": "Noted."},
+        {"role": "user", "content": "How is my house?"},
+    ]
+
+    trimmed = messages_for_upstream_thread(messages, "thread_123")
+
+    assert trimmed == [
+        {"role": "developer", "content": "Harness rules."},
+        {"role": "user", "content": "How is my house?"},
+    ]
+
+
+def test_messages_for_upstream_thread_keeps_full_history_when_disabled(monkeypatch):
+    monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "false")
+    messages = [
+        {"role": "user", "content": "Hi my house is big"},
+        {"role": "assistant", "content": "Noted."},
+        {"role": "user", "content": "How is my house?"},
+    ]
+
+    trimmed = messages_for_upstream_thread(messages, "thread_123")
+
+    assert trimmed == messages

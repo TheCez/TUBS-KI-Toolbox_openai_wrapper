@@ -128,6 +128,10 @@ def _thread_cache_prefix() -> str:
     return os.getenv("TUBS_THREAD_CACHE_PREFIX", "tubs:thread:").strip() or "tubs:thread:"
 
 
+def upstream_threads_enabled() -> bool:
+    return os.getenv("TUBS_USE_UPSTREAM_THREADS", "true").strip().lower() == "true"
+
+
 def _redis_url() -> str | None:
     value = os.getenv("REDIS_URL", "").strip()
     return value or None
@@ -212,6 +216,17 @@ def forget_thread_id(conversation_key: str) -> None:
         _backend().delete(conversation_key)
     except RedisError:
         pass
+
+
+def messages_for_upstream_thread(messages: Sequence[Any], thread_id: str | None) -> list[Any]:
+    if not upstream_threads_enabled() or not thread_id:
+        return list(messages)
+
+    preserved = [message for message in messages if _message_role(message) in {"system", "developer"}]
+    dialogue_messages = [message for message in messages if _message_role(message) not in {"system", "developer"}]
+    if not dialogue_messages:
+        return preserved
+    return [*preserved, dialogue_messages[-1]]
 
 
 def reset_thread_cache() -> None:

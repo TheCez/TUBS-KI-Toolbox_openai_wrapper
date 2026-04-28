@@ -15,7 +15,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.responses import ResponseCreateRequest
-from app.services.conversation_state import build_conversation_key, get_cached_thread_id, remember_thread_id
+from app.services.conversation_state import (
+    build_conversation_key,
+    get_cached_thread_id,
+    messages_for_upstream_thread,
+    remember_thread_id,
+)
 from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import augment_openai_messages_with_context, resolve_openai_context_tools
 from app.services.openai_bridge import (
@@ -110,7 +115,12 @@ async def create_response(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        effective_messages = augment_openai_messages_with_context(staged.messages, context_thread_id)
+        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        effective_messages = (
+            working_messages
+            if staged.thread_id
+            else augment_openai_messages_with_context(working_messages, context_thread_id)
+        )
         resolved = await resolve_openai_context_tools(
             model=body.model,
             messages=effective_messages,
@@ -136,7 +146,12 @@ async def create_response(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        effective_messages = augment_openai_messages_with_context(staged.messages, context_thread_id)
+        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        effective_messages = (
+            working_messages
+            if staged.thread_id
+            else augment_openai_messages_with_context(working_messages, context_thread_id)
+        )
         payload, images, model_str = build_tubs_payload_from_messages(
             model=body.model,
             messages=effective_messages,
