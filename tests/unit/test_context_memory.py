@@ -199,7 +199,7 @@ def test_thread_policy_disables_upstream_threads_when_poisoned():
 
     assert policy_allows_upstream_thread(
         thread_id=thread_id,
-        policy=ThreadPolicy(use_upstream_threads=True, reuse_upstream_thread=True, strict_wrapper_state=False, client_name="generic"),
+        policy=ThreadPolicy(use_upstream_threads=True, reuse_upstream_thread=True, strict_wrapper_state=False, minimal_upstream_mode=False, client_name="generic"),
     ) is False
 
 

@@ -40,10 +40,12 @@ If an agent sends too many requests in parallel and TU-BS responds with `429 Too
 environment:
   - TUBS_MAX_CONCURRENT_REQUESTS=1
   - TUBS_MIN_REQUEST_INTERVAL_SECONDS=0.5
+  - TUBS_RATE_LIMIT_COOLDOWN_SECONDS=8
 ```
 
 - `TUBS_MAX_CONCURRENT_REQUESTS` limits how many upstream TU-BS requests may be active at once across the wrapper.
 - `TUBS_MIN_REQUEST_INTERVAL_SECONDS` enforces a minimum delay between the start of outbound TU-BS requests.
+- `TUBS_RATE_LIMIT_COOLDOWN_SECONDS` adds a global cool-down window after an upstream `429`, so follow-up internal retries, retrieval turns, and staged-ingestion calls do not immediately hammer TU-BS again.
 - For aggressive agents, start with `1` concurrent request and `0.5` to `1.0` seconds spacing.
 
 ### Thread-Aware Context Budgeting
@@ -56,6 +58,7 @@ environment:
   - TUBS_THREAD_PROMPT_TOKENS=9000
   - TUBS_USE_UPSTREAM_THREADS=true
   - TUBS_OPENCLAW_STRICT_WRAPPER_STATE=true
+  - TUBS_OPENCLAW_MINIMAL_MODE=true
   - TUBS_STRICT_WRAPPER_STATE_MODE=false
   - TUBS_NO_UPSTREAM_THREAD_CLIENTS=
   - TUBS_STRICT_WRAPPER_STATE_CLIENTS=
@@ -70,6 +73,7 @@ environment:
 - `TUBS_THREAD_PROMPT_TOKENS` is the prompt budget used once the wrapper can rely on an existing TU-BS thread. In this version, it defaults to the same ceiling as `TUBS_MAX_PROMPT_TOKENS` unless you explicitly lower it.
 - `TUBS_USE_UPSTREAM_THREADS` controls whether reused TU-BS threads should receive only the latest active turn instead of full-history replay. It is `true` by default.
 - `TUBS_OPENCLAW_STRICT_WRAPPER_STATE` defaults to `true` and makes OpenClaw use wrapper-owned state instead of reusing TU-BS upstream threads, which avoids poisoned maintenance turns leaking back into normal chat.
+- `TUBS_OPENCLAW_MINIMAL_MODE` defaults to `true` and keeps OpenClaw on the simplest Anthropic path: no staged-ingestion bootstrap and no wrapper retrieval loop unless you explicitly disable the minimal mode.
 - `TUBS_STRICT_WRAPPER_STATE_MODE` disables TU-BS thread reuse completely and makes the wrapper-owned pinned state, hot state, and durable context the only continuity source.
 - `TUBS_NO_UPSTREAM_THREAD_CLIENTS` can disable TU-BS thread reuse for specific clients detected by user-agent, for example `openclaw,claude-code`.
 - `TUBS_STRICT_WRAPPER_STATE_CLIENTS` enables strict wrapper-state mode only for specific clients.
@@ -144,6 +148,7 @@ How it works:
 - The wrapper resolves those context tool calls locally, then asks the model to continue with the retrieved context, so only relevant history comes back into the prompt.
 - In normal requests, these tools are presented as optional retrieval helpers and the model should answer directly when the current prompt already contains enough information.
 - In overflow requests, the wrapper switches to a bounded retrieval protocol: it stores the incoming turn first, sends only compact bridge context upstream, and requires at least one wrapper context retrieval before it accepts a final answer or external tool call.
+- Internal wrapper requests such as staged-ingestion turns and overflow-retrieval turns use the same global TU-BS request gate as normal user turns, so they are queued and spaced together instead of bypassing the throttle.
 - The wrapper now also maintains a pinned state layer for exact non-semantic thread facts such as user name, assistant identity, bootstrap status, workflow status, and a compact hidden bridge summary. This pinned state is injected on every request, including reused TU-BS thread requests, so exact state does not depend on upstream thread memory alone.
 - The pinned state now also tracks task state, thread-control state, and compaction artifacts, which lets the wrapper reason about poisoned threads, recent rotations, and completed workflows without relying on semantic retrieval.
 - OpenClaw-style maintenance prompts such as `Pre-compaction memory flush ... reply with NO_REPLY` are now treated as maintenance traffic rather than normal task context, so they are not promoted into the active objective, hidden bridge, or semantic memory store.
@@ -159,6 +164,7 @@ How it works:
 - If a thread starts returning low-information filler such as `Nothing else to say here`, the wrapper increments poison counters and can temporarily disable TU-BS thread reuse for that logical conversation after `TUBS_LOW_INFORMATION_POISON_LIMIT` repeats.
 - `NO_REPLY` and repeated `NO_REPLYNO_REPLY` outputs are also treated as poisoned low-information replies, which triggers the same fresh-thread recovery path instead of accepting them as valid assistant answers.
 - Optional debug traces can be stored in Redis so you can inspect ingestion, recovery, retrieval, and poisoning events per logical thread.
+- The debug trace now also records internal OpenAI/Anthropic context-resolution completions, including how many upstream TU-BS calls were spent on that one wrapper turn.
 
 Useful related knobs:
 

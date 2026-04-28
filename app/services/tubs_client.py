@@ -20,6 +20,7 @@ class RequestGate:
         self._spacing_lock = asyncio.Lock()
         self._min_interval_seconds = max(0.0, min_interval_seconds)
         self._last_started_at = 0.0
+        self._cooldown_until = 0.0
 
     @asynccontextmanager
     async def slot(self):
@@ -28,15 +29,21 @@ class RequestGate:
             yield
 
     async def _wait_for_turn(self) -> None:
-        if self._min_interval_seconds <= 0:
-            return
-
         async with self._spacing_lock:
             now = time.perf_counter()
-            wait_seconds = self._min_interval_seconds - (now - self._last_started_at)
+            wait_seconds = max(0.0, self._cooldown_until - now)
+            if self._min_interval_seconds > 0:
+                wait_seconds = max(wait_seconds, self._min_interval_seconds - (now - self._last_started_at))
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
             self._last_started_at = time.perf_counter()
+
+    def note_rate_limit(self, retry_after_seconds: float | None = None) -> None:
+        cooldown = retry_after_seconds
+        if cooldown is None:
+            cooldown = float(os.getenv("TUBS_RATE_LIMIT_COOLDOWN_SECONDS", "8"))
+        cooldown = max(0.0, cooldown)
+        self._cooldown_until = max(self._cooldown_until, time.perf_counter() + cooldown)
 
 
 _REQUEST_GATE = RequestGate(
@@ -52,6 +59,8 @@ def _raise_http_exception(status_code: int, body: str) -> None:
             detail = parsed.get("message") or parsed.get("error") or body
     except json.JSONDecodeError:
         pass
+    if status_code == 429:
+        _REQUEST_GATE.note_rate_limit()
     raise HTTPException(status_code=status_code, detail=detail)
 
 

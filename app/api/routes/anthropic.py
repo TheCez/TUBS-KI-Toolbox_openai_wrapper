@@ -57,6 +57,10 @@ security = HTTPBearer(auto_error=False)
 STOP_TRUNCATION_ENABLED = os.getenv("ENABLE_STOP_TRUNCATION", "false").lower() == "true"
 
 
+def _openclaw_minimal_context_mode(policy) -> bool:
+    return policy.client_name == "openclaw" and policy.minimal_upstream_mode
+
+
 async def get_anthropic_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     x_api_key: str | None = Header(default=None),
@@ -129,30 +133,39 @@ async def anthropic_messages(
     )
 
     async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
+        minimal_mode = _openclaw_minimal_context_mode(policy)
         allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = None if force_fresh_thread or policy.strict_wrapper_state or not allow_upstream_threads else get_cached_thread_id(conversation_key)
         pinned_instruction = pinned_state_instruction(context_thread_id)
         rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
-        staged = await prepare_staged_messages(
-            model=body.model,
-            messages=body.messages,
-            thread_id=thread_id,
-            conversation_key=conversation_key,
-            bearer_token=token,
-        )
+        if minimal_mode:
+            staged_messages = list(body.messages)
+            staged_thread_id = thread_id
+            staged_applied = False
+        else:
+            staged = await prepare_staged_messages(
+                model=body.model,
+                messages=body.messages,
+                thread_id=thread_id,
+                conversation_key=conversation_key,
+                bearer_token=token,
+            )
+            staged_messages = staged.messages
+            staged_thread_id = staged.thread_id
+            staged_applied = staged.applied
         working_messages = messages_for_upstream_thread(
-            staged.messages,
-            staged.thread_id,
+            staged_messages,
+            staged_thread_id,
             use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
         )
         effective_messages = (
             working_messages
-            if staged.thread_id
+            if staged_thread_id
             else augment_anthropic_messages_with_context(working_messages, context_thread_id)
         )
-        overflow_mode = staged.applied or _overflow_active_for_anthropic_messages(
+        overflow_mode = staged_applied or _overflow_active_for_anthropic_messages(
             messages=effective_messages,
-            thread_id=staged.thread_id,
+            thread_id=staged_thread_id,
             system_instructions="\n\n".join(
                 part for part in [pinned_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
             ) or None,
@@ -166,7 +179,7 @@ async def anthropic_messages(
         resolved = await resolve_anthropic_context_tools(
             model=body.model,
             messages=effective_messages,
-            thread_id=staged.thread_id,
+            thread_id=staged_thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
             system_instructions="\n\n".join(
@@ -177,32 +190,41 @@ async def anthropic_messages(
             tool_choice=_tool_choice_to_openai_style(body.tool_choice),
             reasoning=_thinking_to_reasoning(body.thinking),
             send_request=async_send_tubs_request,
-            require_context_retrieval=overflow_mode,
+            require_context_retrieval=overflow_mode and not minimal_mode,
+            allow_wrapper_context_tools=not minimal_mode,
+            context_loop_limit=1 if minimal_mode else None,
         )
         return resolved.final_response
 
     if body.stream:
+        minimal_mode = _openclaw_minimal_context_mode(policy)
         allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = get_cached_thread_id(conversation_key)
         if policy.strict_wrapper_state or not allow_upstream_threads:
             thread_id = None
         pinned_instruction = pinned_state_instruction(context_thread_id)
         rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
-        staged = await prepare_staged_messages(
-            model=body.model,
-            messages=body.messages,
-            thread_id=thread_id,
-            conversation_key=conversation_key,
-            bearer_token=token,
-        )
+        if minimal_mode:
+            staged_messages = list(body.messages)
+            staged_thread_id = thread_id
+        else:
+            staged = await prepare_staged_messages(
+                model=body.model,
+                messages=body.messages,
+                thread_id=thread_id,
+                conversation_key=conversation_key,
+                bearer_token=token,
+            )
+            staged_messages = staged.messages
+            staged_thread_id = staged.thread_id
         working_messages = messages_for_upstream_thread(
-            staged.messages,
-            staged.thread_id,
+            staged_messages,
+            staged_thread_id,
             use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
         )
         effective_messages = (
             working_messages
-            if staged.thread_id
+            if staged_thread_id
             else augment_anthropic_messages_with_context(working_messages, context_thread_id)
         )
         images = get_images_from_anthropic_messages(effective_messages)
@@ -217,11 +239,11 @@ async def anthropic_messages(
         prompt_string = build_prompt_with_compaction(
             effective_messages,
             compile_prompt=compile_anthropic_messages_to_prompt,
-            thread_id=staged.thread_id,
-            prompt_token_budget=effective_prompt_token_budget(staged.thread_id, custom_instructions),
+            thread_id=staged_thread_id,
+            prompt_token_budget=effective_prompt_token_budget(staged_thread_id, custom_instructions),
         )
         tubs_payload = TubsChatRequest(
-            thread=staged.thread_id,
+            thread=staged_thread_id,
             prompt=prompt_string,
             model=resolve_model(body.model),
             customInstructions=custom_instructions,
@@ -458,6 +480,7 @@ async def anthropic_messages(
         {
             "client": policy.client_name,
             "strict_wrapper_state": policy.strict_wrapper_state,
+            "minimal_upstream_mode": policy.minimal_upstream_mode,
             "used_upstream_threads": policy.use_upstream_threads,
             "stop_reason": stop_reason,
         },

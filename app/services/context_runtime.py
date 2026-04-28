@@ -139,6 +139,7 @@ class LocalContextResolution:
     tool_calls: list[ToolCall] | None
     finish_reason: str
     used_context_tools: bool
+    upstream_call_count: int
 
 
 def _overflow_active_for_openai_messages(
@@ -354,8 +355,10 @@ async def resolve_openai_context_tools(
     tool_choice: str | dict[str, Any] | None,
     send_request: SendRequest,
     require_context_retrieval: bool = False,
+    allow_wrapper_context_tools: bool = True,
+    context_loop_limit: int | None = None,
 ) -> LocalContextResolution:
-    enable_context_tools = should_offer_context_tools(context_thread_id)
+    enable_context_tools = allow_wrapper_context_tools and should_offer_context_tools(context_thread_id)
     working_messages = list(messages)
     current_thread_id = thread_id
     used_context_tools = False
@@ -371,7 +374,8 @@ async def resolve_openai_context_tools(
     if overflow_mode:
         effective_tools = _restrict_overflow_tools(effective_tools, anthropic=False)
 
-    for _ in range(_context_loop_limit()):
+    upstream_call_count = 0
+    for _ in range(context_loop_limit or _context_loop_limit()):
         payload, images, _model_str = build_tubs_payload_from_messages(
             model=model,
             messages=working_messages,
@@ -392,6 +396,7 @@ async def resolve_openai_context_tools(
             tool_choice=tool_choice,
         )
         response = await send_request(payload, images, bearer_token, False)
+        upstream_call_count += 1
         thread = response.get("thread")
         if isinstance(thread, dict):
             current_thread_id = thread.get("id", current_thread_id)
@@ -446,6 +451,16 @@ async def resolve_openai_context_tools(
             )
             continue
 
+        record_debug_event(
+            context_thread_id,
+            "openai_context_resolution_completed",
+            {
+                "upstream_call_count": upstream_call_count,
+                "used_context_tools": used_context_tools,
+                "overflow_mode": overflow_mode,
+                "has_external_tool_calls": bool(external_calls),
+            },
+        )
         return LocalContextResolution(
             thread_id=current_thread_id,
             effective_tools=effective_tools,
@@ -455,6 +470,7 @@ async def resolve_openai_context_tools(
             tool_calls=external_calls or tool_calls,
             finish_reason=finish_reason,
             used_context_tools=used_context_tools,
+            upstream_call_count=upstream_call_count,
         )
 
     return LocalContextResolution(
@@ -466,6 +482,7 @@ async def resolve_openai_context_tools(
         tool_calls=last_tool_calls,
         finish_reason=last_finish_reason,
         used_context_tools=used_context_tools,
+        upstream_call_count=upstream_call_count,
     )
 
 
@@ -483,8 +500,10 @@ async def resolve_anthropic_context_tools(
     reasoning: Any,
     send_request: SendRequest,
     require_context_retrieval: bool = False,
+    allow_wrapper_context_tools: bool = True,
+    context_loop_limit: int | None = None,
 ) -> LocalContextResolution:
-    enable_context_tools = should_offer_context_tools(context_thread_id)
+    enable_context_tools = allow_wrapper_context_tools and should_offer_context_tools(context_thread_id)
     working_messages = list(messages)
     current_thread_id = thread_id
     used_context_tools = False
@@ -500,7 +519,8 @@ async def resolve_anthropic_context_tools(
     if overflow_mode:
         effective_tools = _restrict_overflow_tools(effective_tools, anthropic=True)
 
-    for _ in range(_context_loop_limit()):
+    upstream_call_count = 0
+    for _ in range(context_loop_limit or _context_loop_limit()):
         prompt = compile_anthropic_messages_to_prompt(working_messages)
         custom_instructions = build_custom_instructions(
             messages=[],
@@ -535,6 +555,7 @@ async def resolve_anthropic_context_tools(
             bearer_token,
             False,
         )
+        upstream_call_count += 1
         thread = response.get("thread")
         if isinstance(thread, dict):
             current_thread_id = thread.get("id", current_thread_id)
@@ -601,6 +622,16 @@ async def resolve_anthropic_context_tools(
             )
             continue
 
+        record_debug_event(
+            context_thread_id,
+            "anthropic_context_resolution_completed",
+            {
+                "upstream_call_count": upstream_call_count,
+                "used_context_tools": used_context_tools,
+                "overflow_mode": overflow_mode,
+                "has_external_tool_calls": bool(external_calls),
+            },
+        )
         return LocalContextResolution(
             thread_id=current_thread_id,
             effective_tools=effective_tools,
@@ -610,6 +641,7 @@ async def resolve_anthropic_context_tools(
             tool_calls=external_calls or tool_calls,
             finish_reason=finish_reason,
             used_context_tools=used_context_tools,
+            upstream_call_count=upstream_call_count,
         )
 
     return LocalContextResolution(
@@ -621,4 +653,5 @@ async def resolve_anthropic_context_tools(
         tool_calls=last_tool_calls,
         finish_reason=last_finish_reason,
         used_context_tools=used_context_tools,
+        upstream_call_count=upstream_call_count,
     )
