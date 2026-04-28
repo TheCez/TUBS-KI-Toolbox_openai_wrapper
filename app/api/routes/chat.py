@@ -28,6 +28,7 @@ from app.services.context_runtime import (
     note_good_answer,
     note_low_information_reply,
     pinned_state_instruction,
+    protected_working_set_instruction,
     resolve_openai_context_tools,
     _overflow_active_for_openai_messages,
 )
@@ -73,6 +74,7 @@ async def chat_completions(
         allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = None if force_fresh_thread or policy.strict_wrapper_state or not allow_upstream_threads else get_cached_thread_id(conversation_key)
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        working_set_instruction = protected_working_set_instruction(context_thread_id)
         rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
@@ -94,7 +96,7 @@ async def chat_completions(
         overflow_mode = staged.applied or _overflow_active_for_openai_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, retry_note] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, working_set_instruction, rehydration_instruction, retry_note] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -109,7 +111,7 @@ async def chat_completions(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, retry_note] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, working_set_instruction, rehydration_instruction, retry_note] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -126,6 +128,7 @@ async def chat_completions(
         if policy.strict_wrapper_state or not allow_upstream_threads:
             thread_id = None
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        working_set_instruction = protected_working_set_instruction(context_thread_id)
         rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
@@ -149,7 +152,7 @@ async def chat_completions(
             model=body.model,
             messages=effective_messages,
             thread_id=thread_id,
-            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, working_set_instruction, rehydration_instruction] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             max_output_tokens=body.max_completion_tokens or body.max_tokens,

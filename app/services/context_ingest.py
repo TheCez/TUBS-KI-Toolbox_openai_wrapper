@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
-from app.models.context import CompactionArtifact, HotContextSnapshot
+from app.models.context import CompactionArtifact, HotContextSnapshot, ProtectedWorkingSetEntry
 from app.services.context_chunking import summarize_text_chunks
 from app.services.context_store import context_store
 from app.services.debug_trace import record_debug_event
@@ -18,6 +19,7 @@ _PATH_RE = re.compile(r"[A-Za-z]:\\[^\r\n]+|/[^\r\n]+")
 _SYMBOL_RE = re.compile(r"\b(?:const|function|class|def|async def)\s+([A-Za-z_][A-Za-z0-9_]*)|<([A-Z][A-Za-z0-9_]*)\b")
 _LABEL_RE = re.compile(r"^\s*[•\-\*]?\s*(name|my name|creature|vibe|emoji)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _EXACT_REPLY_RE = re.compile(r"reply(?: with exactly)?\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
+_LINE_NUMBERED_CONTENT_RE = re.compile(r"(?m)^\s*\d+\s+.+$")
 _MAINTENANCE_MARKERS = (
     "pre-compaction memory flush",
     "store durable memories only in memory/",
@@ -131,6 +133,49 @@ def _build_hidden_bridge(latest_user_text: str | None, response_text: str | None
     return "\n".join(bridge_parts)[:900]
 
 
+def _working_set_entry_chars() -> int:
+    return max(300, int(os.getenv("TUBS_WORKING_SET_ENTRY_CHARS", "1800")))
+
+
+def _working_set_limit() -> int:
+    return max(1, int(os.getenv("TUBS_WORKING_SET_MAX_ITEMS", "3")))
+
+
+def _extract_read_working_set_entry(text: str, source_tool: str | None = None) -> ProtectedWorkingSetEntry | None:
+    normalized = (text or "").strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    if "read(" not in lowered and "read " not in lowered:
+        return None
+
+    paths = _extract_paths(normalized)
+    file_path = paths[0] if paths else None
+    if not file_path:
+        return None
+
+    line_match = _LINE_NUMBERED_CONTENT_RE.search(normalized)
+    if line_match:
+        content = normalized[line_match.start():].strip()
+    else:
+        first_newline = normalized.find("\n")
+        content = normalized[first_newline + 1 :].strip() if first_newline != -1 else normalized
+
+    if not content or len(content) < 20:
+        return None
+
+    content = content[:_working_set_entry_chars()].rstrip()
+    title = f"Recent file read: {file_path}"
+    return ProtectedWorkingSetEntry(
+        kind="file_read",
+        title=title,
+        file_path=file_path,
+        content=content,
+        source_tool=source_tool,
+        updated_at=datetime.now(UTC),
+    )
+
+
 def _is_maintenance_prompt_text(text: str | None) -> bool:
     lowered = (text or "").strip().lower()
     if not lowered:
@@ -152,6 +197,7 @@ class ContextIngestService:
         latest_user_text = None
         recent_messages: list[str] = []
         tool_failures: list[str] = []
+        working_set_entries: list[ProtectedWorkingSetEntry] = []
         maintenance_detected = False
 
         for index, message in enumerate(messages, start=1):
@@ -236,6 +282,13 @@ class ContextIngestService:
                             symbol_names=_extract_symbols(result["text"]),
                         )
                     )
+                else:
+                    working_entry = _extract_read_working_set_entry(
+                        result["text"],
+                        source_tool=result.get("id") or result.get("type"),
+                    )
+                    if working_entry is not None:
+                        working_set_entries.append(working_entry)
 
         normalized_response = (response_text or "").strip().lower().replace(" ", "")
         is_maintenance_no_reply = maintenance_detected and normalized_response in {"no_reply", "noreply", "noreplynoreply"}
@@ -263,6 +316,7 @@ class ContextIngestService:
             thread_id=thread_id,
             latest_user_text=latest_user_text,
             tool_failures=tool_failures,
+            working_set_entries=working_set_entries,
             recent_messages=recent_messages,
             response_text=response_text,
             maintenance_detected=maintenance_detected,
@@ -286,6 +340,7 @@ class ContextIngestService:
         thread_id: str,
         latest_user_text: str | None,
         tool_failures: list[str],
+        working_set_entries: list[ProtectedWorkingSetEntry],
         recent_messages: list[str],
         response_text: str | None,
         maintenance_detected: bool,
@@ -324,6 +379,16 @@ class ContextIngestService:
             snapshot.unresolved_blockers = snapshot.latest_tool_failures[:]
             snapshot.active_workflow.blocked_on_user = False
             snapshot.active_workflow.status = "blocked_on_error"
+
+        if working_set_entries:
+            existing_by_path = {
+                entry.file_path or entry.title: entry
+                for entry in snapshot.protected_working_set
+            }
+            for entry in working_set_entries:
+                existing_by_path[entry.file_path or entry.title] = entry
+            ordered = sorted(existing_by_path.values(), key=lambda item: item.updated_at)
+            snapshot.protected_working_set = ordered[-_working_set_limit():]
 
         if response_text and any(token in response_text.lower() for token in ["decide", "recommend", "should", "will"]):
             snapshot.recent_decisions = list(dict.fromkeys(snapshot.recent_decisions + [response_text[:220]]))[-4:]

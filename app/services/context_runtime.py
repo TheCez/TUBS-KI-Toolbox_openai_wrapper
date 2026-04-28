@@ -221,6 +221,9 @@ def _snapshot_summary(thread_id: str) -> str | None:
         lines.append("Recent decisions: " + " | ".join(snapshot.recent_decisions[:3]))
     if snapshot.latest_tool_failures:
         lines.append("Latest tool failures: " + " | ".join(snapshot.latest_tool_failures[:2]))
+    if snapshot.protected_working_set:
+        protected_files = [entry.file_path or entry.title for entry in snapshot.protected_working_set[-3:]]
+        lines.append("Protected working set: " + " | ".join(protected_files))
     if snapshot.recent_messages:
         lines.append("Recent raw turns: " + " | ".join(snapshot.recent_messages[-3:]))
     if snapshot.hidden_bridge_summary:
@@ -262,6 +265,34 @@ def pinned_state_instruction(thread_id: str) -> str | None:
     return "Pinned thread state:\n" + "\n".join(f"- {line}" for line in lines)
 
 
+def protected_working_set_instruction(thread_id: str) -> str | None:
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    if snapshot is None or not snapshot.protected_working_set:
+        return None
+
+    max_total_chars = max(400, int(os.getenv("TUBS_WORKING_SET_TOTAL_CHARS", "2600")))
+    lines = [
+        "Protected working set:",
+        "- These are exact recent file/tool read payloads preserved for the current task.",
+        "- If a tool says a file is unchanged since the last read, rely on these exact contents instead of asking to re-read unless they are clearly insufficient.",
+    ]
+    consumed = sum(len(line) + 1 for line in lines)
+    appended = 0
+    for entry in reversed(snapshot.protected_working_set):
+        label = entry.file_path or entry.title
+        block = f"File: {label}\n{entry.content}".strip()
+        block_len = len(block) + 2
+        if consumed + block_len > max_total_chars:
+            break
+        lines.append(block)
+        consumed += block_len
+        appended += 1
+
+    if appended == 0:
+        return None
+    return "\n\n".join(lines)
+
+
 def fresh_thread_rehydration_instruction(thread_id: str) -> str | None:
     snapshot = context_store().get_hot_snapshot(thread_id)
     if snapshot is None:
@@ -273,6 +304,9 @@ def fresh_thread_rehydration_instruction(thread_id: str) -> str | None:
         lines.append(f"Objective: {snapshot.current_objective}")
     if snapshot.current_plan:
         lines.append("Plan: " + " | ".join(snapshot.current_plan[:4]))
+    if snapshot.protected_working_set:
+        lines.append("Protected working set files:")
+        lines.extend(f"  - {entry.file_path or entry.title}" for entry in snapshot.protected_working_set[-3:])
     semantic = _recent_semantic_facts(thread_id, limit=3)
     if semantic:
         lines.append("Relevant prior facts:")

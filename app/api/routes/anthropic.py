@@ -31,6 +31,7 @@ from app.services.context_runtime import (
     note_good_answer,
     note_low_information_reply,
     pinned_state_instruction,
+    protected_working_set_instruction,
     resolve_anthropic_context_tools,
     _overflow_active_for_anthropic_messages,
 )
@@ -137,6 +138,7 @@ async def anthropic_messages(
         allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = None if force_fresh_thread or policy.strict_wrapper_state or not allow_upstream_threads else get_cached_thread_id(conversation_key)
         pinned_instruction = None if minimal_mode else pinned_state_instruction(context_thread_id)
+        working_set_instruction = None if minimal_mode else protected_working_set_instruction(context_thread_id)
         rehydration_instruction = None if minimal_mode or thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         if minimal_mode:
             staged_messages = list(body.messages)
@@ -167,7 +169,7 @@ async def anthropic_messages(
             messages=effective_messages,
             thread_id=staged_thread_id,
             system_instructions="\n\n".join(
-                part for part in [pinned_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
+                part for part in [pinned_instruction, working_set_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
             ) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
@@ -183,7 +185,7 @@ async def anthropic_messages(
             context_thread_id=context_thread_id,
             bearer_token=token,
             system_instructions="\n\n".join(
-                part for part in [pinned_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
+                part for part in [pinned_instruction, working_set_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
             ) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
@@ -203,6 +205,7 @@ async def anthropic_messages(
         if policy.strict_wrapper_state or not allow_upstream_threads:
             thread_id = None
         pinned_instruction = None if minimal_mode else pinned_state_instruction(context_thread_id)
+        working_set_instruction = None if minimal_mode else protected_working_set_instruction(context_thread_id)
         rehydration_instruction = None if minimal_mode or thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         if minimal_mode:
             staged_messages = list(body.messages)
@@ -230,7 +233,7 @@ async def anthropic_messages(
         images = get_images_from_anthropic_messages(effective_messages)
         custom_instructions = build_custom_instructions(
             messages=[],
-            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, working_set_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None] if part) or None,
             tools=body.tools,
             reasoning=_thinking_to_reasoning(body.thinking),
             max_output_tokens=body.max_tokens,

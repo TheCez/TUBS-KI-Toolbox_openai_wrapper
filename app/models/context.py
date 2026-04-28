@@ -180,6 +180,17 @@ class CompactionArtifact(BaseModel):
     created_at: datetime
 
 
+class ProtectedWorkingSetEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["file_read", "tool_output"] = "file_read"
+    title: str
+    file_path: str | None = None
+    content: str
+    source_tool: str | None = None
+    updated_at: datetime
+
+
 class HotContextSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -191,6 +202,7 @@ class HotContextSnapshot(BaseModel):
     task_state: TaskState = Field(default_factory=TaskState)
     thread_control: ThreadControlState = Field(default_factory=ThreadControlState)
     compaction_artifacts: list[CompactionArtifact] = Field(default_factory=list)
+    protected_working_set: list[ProtectedWorkingSetEntry] = Field(default_factory=list)
     hidden_bridge_summary: str | None = None
     current_objective: str | None = None
     current_plan: list[str] = Field(default_factory=list)
