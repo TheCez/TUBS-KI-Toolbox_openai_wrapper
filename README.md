@@ -113,6 +113,7 @@ environment:
   - TUBS_CONTEXT_HOT_PREFIX=tubs:context:hot:
   - TUBS_CONTEXT_TOOLS_ENABLED=true
   - TUBS_CONTEXT_TOOL_LOOP_LIMIT=4
+  - TUBS_REQUIRED_CONTEXT_RETRIEVALS=1
   - TUBS_CONTEXT_EMBEDDING_DIMENSIONS=64
 ```
 
@@ -121,7 +122,8 @@ How it works:
 - Postgres + `pgvector` stores durable memory records such as goals, constraints, tool failures, file facts, code summaries, and assistant decisions.
 - Non-streaming chat, responses, and Anthropic requests expose wrapper-owned context tools like `search_context`, `get_context_by_ids`, and `get_thread_state` only when the wrapper already has durable state worth retrieving for that logical thread.
 - The wrapper resolves those context tool calls locally, then asks the model to continue with the retrieved context, so only relevant history comes back into the prompt.
-- These tools are presented to the model as optional retrieval helpers, not mandatory steps. The model should answer directly when the current prompt already contains enough information.
+- In normal requests, these tools are presented as optional retrieval helpers and the model should answer directly when the current prompt already contains enough information.
+- In overflow requests, the wrapper switches to a bounded retrieval protocol: it stores the incoming turn first, sends only compact bridge context upstream, and requires at least one wrapper context retrieval before it accepts a final answer or external tool call.
 - `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
 - The wrapper also injects targeted planner hints from tool results: repair hints for failed edits, and completion hints for successful file writes/edits so agents are more likely to explicitly close related tasks or todos.
 - Context retrieval payloads are bounded before they go back into the next model turn. Search results, exact-record fetches, and thread-state responses are truncated and capped so retrieval itself does not become the next source of prompt bloat.
@@ -140,11 +142,13 @@ environment:
 
 Important behavior notes:
 - Durable context is scoped per logical wrapper thread, not shared globally.
-- The current request is ingested after the turn completes, so retrieval stays focused on prior context instead of echoing the active prompt back to the model.
+- Non-overflow requests are still ingested after the turn completes, so retrieval stays focused on prior context instead of echoing the active prompt back to the model.
+- Overflow requests ingest the current turn before the first upstream TU-BS call so the model can retrieve it back through wrapper tools if compaction or thread slicing would otherwise hide important detail.
+- The overflow retrieval loop is bounded by `TUBS_CONTEXT_TOOL_LOOP_LIMIT`, and the wrapper only enforces it when context actually overflowed and durable state exists. If no overflow happens, or if the thread has no retrievable durable state, the wrapper returns the answer normally without entering the loop.
 - Streaming requests still get the lightweight Redis-backed summary, but wrapper-owned context tools are only resolved on non-streaming requests in this version.
 - TU-BS thread memory is now a secondary helper. The primary long-horizon memory layer is the wrapper-owned durable context system.
 
-The default `docker-compose.yml` now starts a `pgvector`-enabled Postgres container and points the API at it automatically. If Postgres is unavailable, the wrapper degrades safely to in-memory durable storage while Redis hot snapshots continue to work.
+The default `docker-compose.yml` now starts a `pgvector`-enabled Postgres container and points the API at it automatically. It also runs Redis with append-only persistence and a mounted volume so hot context, staged-ingestion progress, and cached upstream thread IDs survive restarts. If Postgres is unavailable, the wrapper degrades safely to in-memory durable storage while Redis hot snapshots continue to work.
 
 ### TU-BS Threads vs Wrapper Memory
 

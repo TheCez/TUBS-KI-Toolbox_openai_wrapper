@@ -23,7 +23,11 @@ from app.services.conversation_state import (
     remember_thread_id,
 )
 from app.services.context_ingest import context_ingest_service
-from app.services.context_runtime import augment_anthropic_messages_with_context, resolve_anthropic_context_tools
+from app.services.context_runtime import (
+    augment_anthropic_messages_with_context,
+    resolve_anthropic_context_tools,
+    _overflow_active_for_anthropic_messages,
+)
 from app.services.anthropic_translation import (
     compile_anthropic_messages_to_prompt, get_images_from_anthropic_messages,
 )
@@ -124,6 +128,17 @@ async def anthropic_messages(
             if staged.thread_id
             else augment_anthropic_messages_with_context(working_messages, context_thread_id)
         )
+        overflow_mode = staged.applied or _overflow_active_for_anthropic_messages(
+            messages=effective_messages,
+            thread_id=staged.thread_id,
+            system_instructions="\n".join(system_messages).strip() or None,
+            tools=body.tools,
+            max_output_tokens=body.max_tokens,
+            tool_choice=_tool_choice_to_openai_style(body.tool_choice),
+            reasoning=_thinking_to_reasoning(body.thinking),
+        )
+        if overflow_mode:
+            context_ingest_service().ingest_turn(context_thread_id, body.messages)
         resolved = await resolve_anthropic_context_tools(
             model=body.model,
             messages=effective_messages,
@@ -136,6 +151,7 @@ async def anthropic_messages(
             tool_choice=_tool_choice_to_openai_style(body.tool_choice),
             reasoning=_thinking_to_reasoning(body.thinking),
             send_request=async_send_tubs_request,
+            require_context_retrieval=overflow_mode,
         )
         return resolved.final_response
 

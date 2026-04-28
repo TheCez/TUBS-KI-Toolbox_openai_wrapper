@@ -20,7 +20,11 @@ from app.services.conversation_state import (
     remember_thread_id,
 )
 from app.services.context_ingest import context_ingest_service
-from app.services.context_runtime import augment_openai_messages_with_context, resolve_openai_context_tools
+from app.services.context_runtime import (
+    augment_openai_messages_with_context,
+    resolve_openai_context_tools,
+    _overflow_active_for_openai_messages,
+)
 from app.services.openai_bridge import build_tubs_payload_from_messages, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml, truncate_at_stop
 from app.services.staged_ingestion import prepare_staged_messages
@@ -65,6 +69,18 @@ async def chat_completions(
             if staged.thread_id
             else augment_openai_messages_with_context(working_messages, context_thread_id)
         )
+        overflow_mode = staged.applied or _overflow_active_for_openai_messages(
+            messages=effective_messages,
+            thread_id=staged.thread_id,
+            instructions=None,
+            response_format=body.response_format,
+            tools=body.tools,
+            reasoning=None,
+            max_output_tokens=body.max_completion_tokens or body.max_tokens,
+            tool_choice=body.tool_choice,
+        )
+        if overflow_mode:
+            context_ingest_service().ingest_turn(context_thread_id, body.messages)
         resolved = await resolve_openai_context_tools(
             model=body.model,
             messages=effective_messages,
@@ -78,6 +94,7 @@ async def chat_completions(
             max_output_tokens=body.max_completion_tokens or body.max_tokens,
             tool_choice=body.tool_choice,
             send_request=async_send_tubs_request,
+            require_context_retrieval=overflow_mode,
         )
         return resolved.final_response
 

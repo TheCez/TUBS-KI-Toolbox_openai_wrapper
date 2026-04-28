@@ -207,3 +207,70 @@ def test_prompt_budget_accounts_for_large_instruction_overhead(monkeypatch):
     )
     assert "Latest request that must survive." in payload["prompt"]
     assert "Earlier request alpha" not in payload["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_overflow_requires_context_retrieval_before_final_answer(monkeypatch):
+    monkeypatch.setenv("TUBS_ENABLE_STAGED_INGESTION", "false")
+    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "80")
+    monkeypatch.setenv("TUBS_INSTRUCTION_TOKEN_RESERVE", "10")
+    monkeypatch.setenv("TUBS_CONTEXT_TOOL_LOOP_LIMIT", "4")
+
+    calls = {"count": 0}
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        calls["count"] += 1
+        assert stream is False
+        if calls["count"] == 1:
+            assert "overflow context mode" in payload["customInstructions"]
+            return {
+                "type": "done",
+                "response": "I already know the answer.",
+                "promptTokens": 5,
+                "responseTokens": 3,
+                "totalTokens": 8,
+                "thread": {"id": "thread_overflow"},
+            }
+
+        if calls["count"] == 2:
+            assert "overflow context mode" in payload["customInstructions"]
+            assert "Before any final answer or external tool call" in payload["customInstructions"]
+            return {
+                "type": "done",
+                "response": (
+                    '<tool_calls><tool_call><name>search_context</name>'
+                    '<arguments>{"query":"popup calculator integration","top_k":2}</arguments>'
+                    "</tool_call></tool_calls>"
+                ),
+                "promptTokens": 6,
+                "responseTokens": 4,
+                "totalTokens": 10,
+                "thread": {"id": "thread_overflow"},
+            }
+
+        assert "popup calculator integration" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Implement the popup calculator using the retrieved thread context.",
+            "promptTokens": 7,
+            "responseTokens": 4,
+            "totalTokens": 11,
+            "thread": {"id": "thread_overflow"},
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    long_request = "Please implement popup calculator integration. " + ("details " * 500)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": long_request}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "Implement the popup calculator using the retrieved thread context."
+    assert calls["count"] == 3

@@ -292,9 +292,18 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
     raise ValueError(f"Unknown context tool: {name}")
 
 
-def context_tool_instruction() -> str:
+def context_tool_instruction(*, overflow_mode: bool = False) -> str:
     if not _enabled():
         return ""
+    if overflow_mode:
+        return (
+            "This request is running in overflow context mode. "
+            "The current prompt is only a compact bridge, not the full authoritative history. "
+            "Before any final answer or external tool call, first retrieve missing wrapper context. "
+            "Start with `get_thread_state` and/or `search_context`, then use `get_context_by_ids` for exact records. "
+            "If the first retrieval is not enough, call another wrapper context tool. "
+            "Only finalize once the retrieved context is sufficient for a reliable answer."
+        )
     return (
         "Optional wrapper memory tools are available for older thread context. "
         "Use them only if prior goals, decisions, file facts, or failures materially matter. "

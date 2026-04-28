@@ -2,7 +2,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: tubs-redis
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - tubs-redis-data:/data
     networks:
       - setup_npm
 
@@ -53,6 +55,7 @@ services:
       - TUBS_CONTEXT_HOT_PREFIX=${TUBS_CONTEXT_HOT_PREFIX:-tubs:context:hot:}
       - TUBS_CONTEXT_TOOLS_ENABLED=${TUBS_CONTEXT_TOOLS_ENABLED:-true}
       - TUBS_CONTEXT_TOOL_LOOP_LIMIT=${TUBS_CONTEXT_TOOL_LOOP_LIMIT:-4}
+      - TUBS_REQUIRED_CONTEXT_RETRIEVALS=${TUBS_REQUIRED_CONTEXT_RETRIEVALS:-1}
       - TUBS_CONTEXT_EMBEDDING_DIMENSIONS=${TUBS_CONTEXT_EMBEDDING_DIMENSIONS:-64}
       # Optional: Override default Anthropic model mappings
       # - ANTHROPIC_MODEL_MAP={"claude-3-5-sonnet-20241022": "gpt-4o", "claude-3-opus-20240229": "gpt-5.4"}
@@ -67,3 +70,4 @@ networks:
 
 volumes:
   tubs-postgres-data:
+  tubs-redis-data:

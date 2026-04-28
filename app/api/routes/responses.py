@@ -22,7 +22,11 @@ from app.services.conversation_state import (
     remember_thread_id,
 )
 from app.services.context_ingest import context_ingest_service
-from app.services.context_runtime import augment_openai_messages_with_context, resolve_openai_context_tools
+from app.services.context_runtime import (
+    augment_openai_messages_with_context,
+    resolve_openai_context_tools,
+    _overflow_active_for_openai_messages,
+)
 from app.services.openai_bridge import (
     build_tubs_payload_from_messages,
     parse_assistant_response,
@@ -121,6 +125,18 @@ async def create_response(
             if staged.thread_id
             else augment_openai_messages_with_context(working_messages, context_thread_id)
         )
+        overflow_mode = staged.applied or _overflow_active_for_openai_messages(
+            messages=effective_messages,
+            thread_id=staged.thread_id,
+            instructions=body.instructions,
+            response_format=response_format,
+            tools=body.tools,
+            reasoning=body.reasoning,
+            max_output_tokens=body.max_output_tokens,
+            tool_choice=body.tool_choice,
+        )
+        if overflow_mode:
+            context_ingest_service().ingest_turn(context_thread_id, normalized_messages)
         resolved = await resolve_openai_context_tools(
             model=body.model,
             messages=effective_messages,
@@ -134,6 +150,7 @@ async def create_response(
             max_output_tokens=body.max_output_tokens,
             tool_choice=body.tool_choice,
             send_request=async_send_tubs_request,
+            require_context_retrieval=overflow_mode,
         )
         return resolved.final_response
 
