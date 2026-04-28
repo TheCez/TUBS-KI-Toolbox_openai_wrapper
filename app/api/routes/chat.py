@@ -15,12 +15,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.models.openai import ChatCompletionRequest, ChatCompletionResponse, ChoiceNonStreaming, Message, Usage
 from app.services.conversation_state import (
     build_conversation_key,
+    forget_thread_id,
     get_cached_thread_id,
     messages_for_upstream_thread,
     remember_thread_id,
 )
 from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
+    _is_low_information_final_text,
     augment_openai_messages_with_context,
     resolve_openai_context_tools,
     _overflow_active_for_openai_messages,
@@ -53,8 +55,13 @@ async def chat_completions(
     )
     context_thread_id = conversation_key
     model_str = str(body.model.value) if hasattr(body.model, "value") else str(body.model)
+    low_information_retry_note = (
+        "The previous assistant reply was a non-answer placeholder. "
+        "Answer the user's latest request directly and concretely. "
+        "Do not reply with bootstrap filler, generic closure, or 'Nothing else to say here'."
+    )
 
-    async def _build_non_stream_response(force_fresh_thread: bool):
+    async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
         thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
         staged = await prepare_staged_messages(
             model=body.model,
@@ -72,7 +79,7 @@ async def chat_completions(
         overflow_mode = staged.applied or _overflow_active_for_openai_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            instructions=None,
+            instructions=retry_note,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -87,7 +94,7 @@ async def chat_completions(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            instructions=None,
+            instructions=retry_note,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -275,6 +282,22 @@ async def chat_completions(
         response_text,
         tools=body.tools,
     )
+    if not tool_calls and _is_low_information_final_text(response_text):
+        context_ingest_service().ingest_turn(context_thread_id, body.messages)
+        forget_thread_id(conversation_key)
+        response_or_stream = await _build_non_stream_response(True, low_information_retry_note)
+        response_text = response_or_stream.get("response", "")
+        remember_thread_id(conversation_key, response_or_stream)
+        p_tokens = response_or_stream.get("promptTokens", 0)
+        c_tokens = response_or_stream.get("responseTokens", 0)
+        t_tokens = response_or_stream.get("totalTokens", 0)
+        if STOP_TRUNCATION_ENABLED and body.stop:
+            stop_sequences = body.stop if isinstance(body.stop, list) else [body.stop]
+            response_text, _ = truncate_at_stop(response_text, stop_sequences)
+        response_text, reasoning, tool_calls, finish_reason = parse_assistant_response(
+            response_text,
+            tools=body.tools,
+        )
     context_ingest_service().ingest_turn(context_thread_id, body.messages, response_text=response_text or None)
 
     return ChatCompletionResponse(

@@ -17,12 +17,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.models.responses import ResponseCreateRequest
 from app.services.conversation_state import (
     build_conversation_key,
+    forget_thread_id,
     get_cached_thread_id,
     messages_for_upstream_thread,
     remember_thread_id,
 )
 from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
+    _is_low_information_final_text,
     augment_openai_messages_with_context,
     resolve_openai_context_tools,
     _overflow_active_for_openai_messages,
@@ -109,8 +111,13 @@ async def create_response(
     context_thread_id = conversation_key
     normalized_messages = response_input_to_messages(body.input)
     response_format = body.text.format if body.text and body.text.format else None
+    low_information_retry_note = (
+        "The previous assistant reply was a non-answer placeholder. "
+        "Answer the user's latest request directly and concretely. "
+        "Do not reply with bootstrap filler, generic closure, or 'Nothing else to say here'."
+    )
 
-    async def _build_non_stream_response(force_fresh_thread: bool):
+    async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
         thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
         staged = await prepare_staged_messages(
             model=body.model,
@@ -128,7 +135,7 @@ async def create_response(
         overflow_mode = staged.applied or _overflow_active_for_openai_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            instructions=body.instructions,
+            instructions="\n\n".join(part for part in [body.instructions, retry_note] if part) or None,
             response_format=response_format,
             tools=body.tools,
             reasoning=body.reasoning,
@@ -143,7 +150,7 @@ async def create_response(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            instructions=body.instructions,
+            instructions="\n\n".join(part for part in [body.instructions, retry_note] if part) or None,
             response_format=response_format,
             tools=body.tools,
             reasoning=body.reasoning,
@@ -416,6 +423,15 @@ async def create_response(
         tools=body.tools,
     )
     remember_thread_id(conversation_key, response_or_stream)
+    if not tool_calls and _is_low_information_final_text(output_text):
+        context_ingest_service().ingest_turn(context_thread_id, normalized_messages)
+        forget_thread_id(conversation_key)
+        response_or_stream = await _build_non_stream_response(True, low_information_retry_note)
+        output_text, reasoning, tool_calls, _finish_reason = parse_assistant_response(
+            response_or_stream.get("response", ""),
+            tools=body.tools,
+        )
+        remember_thread_id(conversation_key, response_or_stream)
     context_ingest_service().ingest_turn(context_thread_id, normalized_messages, response_text=output_text or None)
     output_items = []
     if output_text:

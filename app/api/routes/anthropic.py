@@ -18,12 +18,14 @@ from app.models.responses import ResponseReasoningConfig
 from app.services.conversation_state import (
     build_conversation_key,
     build_prompt_with_compaction,
+    forget_thread_id,
     get_cached_thread_id,
     messages_for_upstream_thread,
     remember_thread_id,
 )
 from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
+    _is_low_information_final_text,
     augment_anthropic_messages_with_context,
     resolve_anthropic_context_tools,
     _overflow_active_for_anthropic_messages,
@@ -112,8 +114,13 @@ async def anthropic_messages(
             system_messages.append(body.system)
         elif isinstance(body.system, list):
             system_messages.extend(part.text for part in body.system if hasattr(part, "text"))
+    low_information_retry_note = (
+        "The previous assistant reply was a non-answer placeholder. "
+        "Answer the user's latest request directly and concretely. "
+        "Do not reply with bootstrap filler, generic closure, or 'Nothing else to say here'."
+    )
 
-    async def _build_non_stream_response(force_fresh_thread: bool):
+    async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
         thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
         staged = await prepare_staged_messages(
             model=body.model,
@@ -131,7 +138,7 @@ async def anthropic_messages(
         overflow_mode = staged.applied or _overflow_active_for_anthropic_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            system_instructions="\n".join(system_messages).strip() or None,
+            system_instructions="\n\n".join(part for part in ["\n".join(system_messages).strip() or None, retry_note] if part) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
             tool_choice=_tool_choice_to_openai_style(body.tool_choice),
@@ -145,7 +152,7 @@ async def anthropic_messages(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            system_instructions="\n".join(system_messages).strip() or None,
+            system_instructions="\n\n".join(part for part in ["\n".join(system_messages).strip() or None, retry_note] if part) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
             tool_choice=_tool_choice_to_openai_style(body.tool_choice),
@@ -364,6 +371,14 @@ async def anthropic_messages(
     remember_thread_id(conversation_key, response_or_stream)
     p_tokens = response_or_stream.get("promptTokens", 0)
     c_tokens = response_or_stream.get("responseTokens", 0)
+    if _is_low_information_final_text(response_text):
+        context_ingest_service().ingest_turn(context_thread_id, body.messages)
+        forget_thread_id(conversation_key)
+        response_or_stream = await _build_non_stream_response(True, low_information_retry_note)
+        response_text = response_or_stream.get("response", "")
+        remember_thread_id(conversation_key, response_or_stream)
+        p_tokens = response_or_stream.get("promptTokens", 0)
+        c_tokens = response_or_stream.get("responseTokens", 0)
 
     stop_reason = "end_turn"
     content_blocks = []
