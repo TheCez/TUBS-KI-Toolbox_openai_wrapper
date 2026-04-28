@@ -28,6 +28,32 @@ def _tool_names() -> set[str]:
     }
 
 
+def _search_top_k_max() -> int:
+    return max(1, int(os.getenv("TUBS_CONTEXT_SEARCH_TOP_K_MAX", "4")))
+
+
+def _summary_chars() -> int:
+    return max(80, int(os.getenv("TUBS_CONTEXT_SUMMARY_CHARS", "280")))
+
+
+def _record_content_chars() -> int:
+    return max(120, int(os.getenv("TUBS_CONTEXT_RECORD_CONTENT_CHARS", "500")))
+
+
+def _get_by_ids_max_records() -> int:
+    return max(1, int(os.getenv("TUBS_CONTEXT_GET_BY_IDS_MAX_RECORDS", "3")))
+
+
+def _thread_state_recent_messages_max() -> int:
+    return max(0, int(os.getenv("TUBS_CONTEXT_THREAD_STATE_RECENT_MESSAGES_MAX", "2")))
+
+
+def _truncate(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3].rstrip() + "..."
+
+
 def is_context_tool(name: str) -> bool:
     return name in _tool_names()
 
@@ -157,7 +183,7 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
             kinds=args.kinds,
             file_paths=args.file_paths,
             symbols=args.symbols,
-            top_k=args.top_k,
+            top_k=min(args.top_k, _search_top_k_max()),
         )
         return json.dumps(
             {
@@ -166,9 +192,9 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
                         "memory_id": item["record"].memory_id,
                         "kind": item["record"].kind,
                         "title": item["record"].title,
-                        "summary": item["record"].summary,
-                        "file_paths": item["record"].file_paths,
-                        "symbol_names": item["record"].symbol_names,
+                        "summary": _truncate(item["record"].summary, _summary_chars()),
+                        "file_paths": item["record"].file_paths[:2],
+                        "symbol_names": item["record"].symbol_names[:4],
                         "score": round(item["score"], 4),
                     }
                     for item in results
@@ -179,8 +205,25 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
 
     if name == "get_context_by_ids":
         args = GetContextByIdsArgs.model_validate_json(arguments_json)
-        records = store.get_by_ids(thread_id, args.ids)
-        return json.dumps({"records": [record.model_dump(mode="json") for record in records]}, ensure_ascii=False)
+        records = store.get_by_ids(thread_id, args.ids[: _get_by_ids_max_records()])
+        return json.dumps(
+            {
+                "records": [
+                    {
+                        "memory_id": record.memory_id,
+                        "kind": record.kind,
+                        "title": record.title,
+                        "summary": _truncate(record.summary, _summary_chars()),
+                        "content": _truncate(record.content, _record_content_chars()),
+                        "file_paths": record.file_paths[:2],
+                        "symbol_names": record.symbol_names[:4],
+                        "metadata": record.metadata,
+                    }
+                    for record in records
+                ]
+            },
+            ensure_ascii=False,
+        )
 
     if name == "get_thread_state":
         args = GetThreadStateArgs.model_validate_json(arguments_json or "{}")
@@ -190,6 +233,16 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
         payload = snapshot.model_dump(mode="json")
         if not args.include_recent_messages:
             payload["recent_messages"] = []
+        else:
+            payload["recent_messages"] = [
+                _truncate(item, _summary_chars())
+                for item in payload.get("recent_messages", [])[: _thread_state_recent_messages_max()]
+            ]
+        for key in ("current_objective",):
+            if payload.get(key):
+                payload[key] = _truncate(payload[key], _record_content_chars())
+        for key in ("current_plan", "unresolved_blockers", "recent_decisions", "latest_tool_failures"):
+            payload[key] = [_truncate(item, _summary_chars()) for item in payload.get(key, [])[:4]]
         return json.dumps({"thread_id": thread_id, "state": payload}, ensure_ascii=False)
 
     if name == "store_context_note":
@@ -211,7 +264,7 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
 
     if name == "summarize_context_window":
         args = SummarizeContextWindowArgs.model_validate_json(arguments_json or "{}")
-        records = store.recent(thread_id, args.top_k)
+        records = store.recent(thread_id, min(args.top_k, _search_top_k_max()))
         return json.dumps(
             {
                 "summary": [
@@ -219,7 +272,7 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
                         "memory_id": record.memory_id,
                         "kind": record.kind,
                         "title": record.title,
-                        "summary": record.summary,
+                        "summary": _truncate(record.summary, _summary_chars()),
                     }
                     for record in records
                 ]

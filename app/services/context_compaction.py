@@ -320,10 +320,14 @@ def build_prompt_with_compaction(
     *,
     compile_prompt: Callable[[Sequence[Any]], str],
     thread_id: str | None = None,
+    prompt_token_budget: int | None = None,
 ) -> str:
     keep_last_turns = _keep_last_turns()
     summary_budget = _thread_summary_budget() if thread_id else _summary_budget()
-    prompt_budget = _prompt_char_budget(thread_id)
+    if prompt_token_budget is None:
+        prompt_budget = _prompt_char_budget(thread_id)
+    else:
+        prompt_budget = max(80, prompt_token_budget) * _chars_per_token()
     step_chunk_size = max(2, keep_last_turns)
 
     full_prompt = compile_prompt(messages).strip()

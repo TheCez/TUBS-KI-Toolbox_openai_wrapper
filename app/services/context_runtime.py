@@ -8,9 +8,15 @@ from typing import Any, Awaitable, Callable, Sequence
 from app.models.anthropic import Message as AnthropicMessage
 from app.models.openai import Message, ToolCall, ToolCallFunction
 from app.services.anthropic_translation import compile_anthropic_messages_to_prompt, get_images_from_anthropic_messages
+from app.services.conversation_state import build_prompt_with_compaction
 from app.services.context_store import context_store
 from app.services.context_tools import context_tool_instruction, execute_context_tool, is_context_tool, merge_tools
-from app.services.openai_bridge import build_custom_instructions, build_tubs_payload_from_messages, parse_assistant_response
+from app.services.openai_bridge import (
+    build_custom_instructions,
+    build_tubs_payload_from_messages,
+    effective_prompt_token_budget,
+    parse_assistant_response,
+)
 from app.services.prompt import extract_reasoning
 from app.services.tool_validation import validate_tool_calls
 from app.models.tubs import TubsChatRequest
@@ -189,18 +195,24 @@ async def resolve_anthropic_context_tools(
 
     for _ in range(_context_loop_limit()):
         prompt = compile_anthropic_messages_to_prompt(working_messages)
+        custom_instructions = build_custom_instructions(
+            messages=[],
+            instructions="\n\n".join(part for part in [system_instructions, context_tool_instruction()] if part) or None,
+            tools=effective_tools,
+            reasoning=reasoning,
+            max_output_tokens=max_output_tokens,
+            tool_choice=tool_choice,
+        )
         payload = TubsChatRequest(
             thread=current_thread_id,
-            prompt=prompt,
-            model=resolve_model(model),
-            customInstructions=build_custom_instructions(
-                messages=[],
-                instructions="\n\n".join(part for part in [system_instructions, context_tool_instruction()] if part) or None,
-                tools=effective_tools,
-                reasoning=reasoning,
-                max_output_tokens=max_output_tokens,
-                tool_choice=tool_choice,
+            prompt=build_prompt_with_compaction(
+                working_messages,
+                compile_prompt=compile_anthropic_messages_to_prompt,
+                thread_id=current_thread_id,
+                prompt_token_budget=effective_prompt_token_budget(current_thread_id, custom_instructions),
             ),
+            model=resolve_model(model),
+            customInstructions=custom_instructions,
         ).model_dump(exclude_none=True)
         response = await send_request(
             payload,

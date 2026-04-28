@@ -26,7 +26,7 @@ from app.services.context_runtime import augment_anthropic_messages_with_context
 from app.services.anthropic_translation import (
     compile_anthropic_messages_to_prompt, get_images_from_anthropic_messages,
 )
-from app.services.openai_bridge import build_custom_instructions
+from app.services.openai_bridge import build_custom_instructions, effective_prompt_token_budget
 from app.services.tubs_client import async_send_tubs_request
 from app.services.staged_ingestion import prepare_staged_messages
 from app.services.model_map import resolve_model
@@ -108,11 +108,6 @@ async def anthropic_messages(
         bearer_token=token,
     )
     effective_messages = augment_anthropic_messages_with_context(staged.messages, context_thread_id)
-    prompt_string = build_prompt_with_compaction(
-        effective_messages,
-        compile_prompt=compile_anthropic_messages_to_prompt,
-        thread_id=staged.thread_id,
-    )
     images = get_images_from_anthropic_messages(effective_messages)
 
     system_messages = []
@@ -129,6 +124,12 @@ async def anthropic_messages(
         reasoning=_thinking_to_reasoning(body.thinking),
         max_output_tokens=body.max_tokens,
         tool_choice=_tool_choice_to_openai_style(body.tool_choice),
+    )
+    prompt_string = build_prompt_with_compaction(
+        effective_messages,
+        compile_prompt=compile_anthropic_messages_to_prompt,
+        thread_id=staged.thread_id,
+        prompt_token_budget=effective_prompt_token_budget(staged.thread_id, custom_instructions),
     )
 
     if body.stream:

@@ -77,6 +77,16 @@ Practical meaning:
 - If the compiled outbound prompt is still under your configured budget, the wrapper now sends the full prompt without compacting older turns.
 - Compaction is a true overflow fallback, not the default path.
 - If you want compaction to begin around a `10k` upstream ceiling, set `TUBS_MAX_PROMPT_TOKENS` and `TUBS_THREAD_PROMPT_TOKENS` just under that ceiling, for example `9000`.
+- The wrapper now also budgets for `customInstructions` overhead before compacting the prompt. That means tool schemas, reasoning directives, and wrapper hints are counted as part of the real upstream request budget instead of being ignored.
+
+Useful related knobs:
+
+```yaml
+environment:
+  - TUBS_INSTRUCTION_TOKEN_RESERVE=600
+```
+
+- `TUBS_INSTRUCTION_TOKEN_RESERVE` keeps extra headroom for request metadata and instruction overhead so the final TU-BS request is less likely to cross the true upstream limit after prompt compaction.
 
 ### Durable Context Layer
 
@@ -101,6 +111,18 @@ How it works:
 - These tools are presented to the model as optional retrieval helpers, not mandatory steps. The model should answer directly when the current prompt already contains enough information.
 - `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
 - The wrapper also injects targeted planner hints from tool results: repair hints for failed edits, and completion hints for successful file writes/edits so agents are more likely to explicitly close related tasks or todos.
+- Context retrieval payloads are bounded before they go back into the next model turn. Search results, exact-record fetches, and thread-state responses are truncated and capped so retrieval itself does not become the next source of prompt bloat.
+
+Useful related knobs:
+
+```yaml
+environment:
+  - TUBS_CONTEXT_SEARCH_TOP_K_MAX=4
+  - TUBS_CONTEXT_SUMMARY_CHARS=280
+  - TUBS_CONTEXT_RECORD_CONTENT_CHARS=500
+  - TUBS_CONTEXT_GET_BY_IDS_MAX_RECORDS=3
+  - TUBS_CONTEXT_THREAD_STATE_RECENT_MESSAGES_MAX=2
+```
 
 Important behavior notes:
 - Durable context is scoped per logical wrapper thread, not shared globally.

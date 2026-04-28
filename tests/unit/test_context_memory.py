@@ -4,9 +4,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.models.openai import Message
 from app.services.context_ingest import context_ingest_service
 from app.services.context_store import reset_context_store
 from app.services.context_tools import context_tool_instruction, context_tools_for_openai, execute_context_tool
+from app.services.openai_bridge import build_tubs_payload_from_messages
 from app.services.conversation_state import build_conversation_key, reset_thread_cache
 
 
@@ -65,6 +67,36 @@ def test_context_tool_metadata_marks_tools_as_optional_rag_helpers():
     assert "optional" in search_tool["function"]["description"].lower()
     assert "rag" in search_tool["function"]["description"].lower()
     assert "optional durable memory retrieval helpers" in context_tool_instruction().lower()
+
+
+def test_get_context_by_ids_is_bounded_for_prompt_safety(monkeypatch):
+    monkeypatch.setenv("TUBS_CONTEXT_GET_BY_IDS_MAX_RECORDS", "1")
+    monkeypatch.setenv("TUBS_CONTEXT_RECORD_CONTENT_CHARS", "120")
+    service = context_ingest_service()
+    thread_id = "thread-bounded"
+    long_text = "Important context. " + ("detail " * 200)
+    service.ingest_turn(
+        thread_id,
+        [{"role": "user", "content": long_text}],
+        response_text="Stored.",
+    )
+    search_payload = json.loads(
+        execute_context_tool(
+            "search_context",
+            json.dumps({"query": "important context", "top_k": 2}),
+            thread_id,
+        )
+    )
+    first_id = search_payload["results"][0]["memory_id"]
+    details_payload = json.loads(
+        execute_context_tool(
+            "get_context_by_ids",
+            json.dumps({"ids": [first_id]}),
+            thread_id,
+        )
+    )
+    assert len(details_payload["records"]) == 1
+    assert len(details_payload["records"][0]["content"]) <= 120
 
 
 @pytest.mark.asyncio
@@ -130,3 +162,20 @@ async def test_chat_completions_resolves_wrapper_context_tool(monkeypatch):
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "Use the earlier anchored edit decision for SectionCard.tsx."
     assert calls["count"] == 2
+
+
+def test_prompt_budget_accounts_for_large_instruction_overhead(monkeypatch):
+    monkeypatch.setenv("TUBS_MAX_PROMPT_TOKENS", "120")
+    monkeypatch.setenv("TUBS_INSTRUCTION_TOKEN_RESERVE", "20")
+    messages = [
+        Message(role="user", content="Earlier request " + ("alpha " * 50)),
+        Message(role="assistant", content="Earlier answer " + ("beta " * 40)),
+        Message(role="user", content="Latest request that must survive."),
+    ]
+    payload, _images, _model = build_tubs_payload_from_messages(
+        model="gpt-5.4",
+        messages=messages,
+        instructions="System guidance. " + ("rules " * 180),
+    )
+    assert "Latest request that must survive." in payload["prompt"]
+    assert "Earlier request alpha" not in payload["prompt"]

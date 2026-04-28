@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from typing import Any, Iterable, List, Optional, Sequence
 
@@ -17,7 +18,7 @@ from app.models.responses import (
     ResponseShorthandInputMessage,
 )
 from app.models.tubs import TubsChatRequest
-from app.services.conversation_state import build_prompt_with_compaction
+from app.services.conversation_state import build_prompt_with_compaction, estimate_token_count
 from app.services.model_map import resolve_model
 from app.services.prompt import (
     build_tool_instructions,
@@ -190,6 +191,27 @@ def build_custom_instructions(
     return combined or None
 
 
+def _base_prompt_token_budget(thread_id: Optional[str]) -> int:
+    if thread_id:
+        configured = os.getenv("TUBS_THREAD_PROMPT_TOKENS")
+        if configured is None or not configured.strip():
+            return max(100, int(os.getenv("TUBS_MAX_PROMPT_TOKENS", "9000")))
+        return max(100, int(configured))
+    return max(100, int(os.getenv("TUBS_MAX_PROMPT_TOKENS", "9000")))
+
+
+def _instruction_token_reserve() -> int:
+    return max(100, int(os.getenv("TUBS_INSTRUCTION_TOKEN_RESERVE", "600")))
+
+
+def effective_prompt_token_budget(thread_id: Optional[str], custom_instructions: Optional[str]) -> int:
+    base_budget = _base_prompt_token_budget(thread_id)
+    instruction_tokens = estimate_token_count(custom_instructions or "")
+    remaining = base_budget - instruction_tokens - _instruction_token_reserve()
+    minimum_budget = min(base_budget, max(40, base_budget // 3))
+    return max(minimum_budget, remaining)
+
+
 def build_tubs_payload_from_messages(
     *,
     model: Any,
@@ -202,23 +224,25 @@ def build_tubs_payload_from_messages(
     max_output_tokens: Optional[int] = None,
     tool_choice: Optional[str | dict[str, Any] | ResponseFunctionToolChoice] = None,
 ) -> tuple[dict[str, Any], list[tuple[str, bytes, str]], str]:
+    custom_instructions = build_custom_instructions(
+        messages=messages,
+        response_format=response_format,
+        tools=tools,
+        instructions=instructions,
+        reasoning=reasoning,
+        max_output_tokens=max_output_tokens,
+        tool_choice=tool_choice,
+    )
     payload = TubsChatRequest(
         thread=thread_id,
         prompt=build_prompt_with_compaction(
             list(messages),
             compile_prompt=compile_messages_to_prompt,
             thread_id=thread_id,
+            prompt_token_budget=effective_prompt_token_budget(thread_id, custom_instructions),
         ),
         model=resolve_model(model),
-        customInstructions=build_custom_instructions(
-            messages=messages,
-            response_format=response_format,
-            tools=tools,
-            instructions=instructions,
-            reasoning=reasoning,
-            max_output_tokens=max_output_tokens,
-            tool_choice=tool_choice,
-        ),
+        customInstructions=custom_instructions,
     ).model_dump(exclude_none=True)
 
     return payload, get_images_from_messages(list(messages)), str(model.value) if hasattr(model, "value") else str(model)
