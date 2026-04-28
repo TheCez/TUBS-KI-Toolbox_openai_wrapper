@@ -159,6 +159,43 @@ def test_recent_file_reads_are_preserved_in_protected_working_set():
     assert "import { Outlet } from 'react-router-dom'" in instruction
 
 
+def test_structured_plan_outputs_are_preserved_in_protected_working_set():
+    service = context_ingest_service()
+    thread_id = "thread-plan-working-set"
+    response_text = (
+        "Lowest-risk refresh strategy\n\n"
+        "- keep Tailwind as-is\n"
+        "- add shared animation/background CSS in src/index.css\n"
+        "- apply shell-level layout polish in src/components/SiteShell.tsx\n"
+        "- refresh homepage presentation in src/pages/HomePage.tsx\n\n"
+        "Bottom line\n\n"
+        "- global polish: src/index.css\n"
+        "- app shell/background: src/components/SiteShell.tsx\n"
+        "- homepage wow-factor: src/pages/HomePage.tsx\n"
+    )
+    service.ingest_turn(
+        thread_id,
+        [{"role": "user", "content": "Plan the animated background refresh."}],
+        response_text=response_text,
+    )
+
+    state_payload = json.loads(
+        execute_context_tool(
+            "get_thread_state",
+            json.dumps({"include_recent_messages": False}),
+            thread_id,
+        )
+    )
+    working_set = state_payload["state"]["protected_working_set"]
+    assert working_set
+    assert any(entry["kind"] == "plan_summary" for entry in working_set)
+
+    instruction = protected_working_set_instruction(thread_id) or ""
+    assert "Protected working set:" in instruction
+    assert "Lowest-risk refresh strategy" in instruction
+    assert "src/components/SiteShell.tsx" in instruction
+
+
 def test_context_tool_metadata_marks_tools_as_optional_rag_helpers():
     search_tool = next(
         tool for tool in context_tools_for_openai() if tool["function"]["name"] == "search_context"
@@ -510,6 +547,57 @@ async def test_chat_completions_includes_protected_working_set_instruction(monke
 
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "Working set preserved."
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_includes_recent_plan_working_set_instruction(monkeypatch):
+    service = context_ingest_service()
+    explicit_user = "thread-plan-working-set-route"
+    conversation_key = build_conversation_key(
+        bearer_token="test-token",
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Continue the UI polish implementation"}],
+        explicit_user=explicit_user,
+    )
+    service.ingest_turn(
+        conversation_key,
+        [{"role": "user", "content": "Explore the current UI structure and styling."}],
+        response_text=(
+            "Lowest-risk refresh strategy\n\n"
+            "- keep Tailwind as-is\n"
+            "- add shared animation/background CSS in src/index.css\n"
+            "- apply shell-level layout polish in src/components/SiteShell.tsx\n"
+            "- refresh homepage presentation in src/pages/HomePage.tsx\n"
+        ),
+    )
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Protected working set:" in payload["customInstructions"]
+        assert "Lowest-risk refresh strategy" in payload["customInstructions"]
+        assert "src/pages/HomePage.tsx" in payload["customInstructions"]
+        return {
+            "type": "done",
+            "response": "Plan carried forward.",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "user": explicit_user,
+                "messages": [{"role": "user", "content": "Continue the UI polish implementation"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "Plan carried forward."
 
 
 @pytest.mark.asyncio

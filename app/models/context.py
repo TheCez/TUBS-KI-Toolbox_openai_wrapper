@@ -183,7 +183,7 @@ class CompactionArtifact(BaseModel):
 class ProtectedWorkingSetEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["file_read", "tool_output"] = "file_read"
+    kind: Literal["file_read", "tool_output", "agent_summary", "plan_summary"] = "file_read"
     title: str
     file_path: str | None = None
     content: str

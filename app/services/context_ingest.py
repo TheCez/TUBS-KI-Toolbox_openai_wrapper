@@ -176,6 +176,45 @@ def _extract_read_working_set_entry(text: str, source_tool: str | None = None) -
     )
 
 
+def _looks_like_structured_working_context(text: str) -> bool:
+    normalized = (text or "").strip()
+    if len(normalized) < 120:
+        return False
+    lowered = normalized.lower()
+    signal_tokens = (
+        "implementation plan",
+        "implementation approach",
+        "bottom line",
+        "lowest-risk",
+        "refresh strategy",
+        "explore",
+        "design patterns",
+        "entry points",
+        "current ui structure",
+        "next i can",
+        "if you want, i can next",
+    )
+    bullet_like = normalized.count("\n- ") + normalized.count("\n• ") + normalized.count("\n* ")
+    return bullet_like >= 2 or any(token in lowered for token in signal_tokens)
+
+
+def _extract_structured_working_set_entry(text: str, *, role: str, source_tool: str | None = None) -> ProtectedWorkingSetEntry | None:
+    normalized = (text or "").strip()
+    if not _looks_like_structured_working_context(normalized):
+        return None
+
+    lowered = normalized.lower()
+    kind = "plan_summary" if any(token in lowered for token in ("plan", "strategy", "approach", "bottom line")) else "agent_summary"
+    title = "Recent implementation plan" if kind == "plan_summary" else "Recent exploration summary"
+    return ProtectedWorkingSetEntry(
+        kind=kind,  # type: ignore[arg-type]
+        title=title,
+        content=normalized[:_working_set_entry_chars()].rstrip(),
+        source_tool=source_tool or role,
+        updated_at=datetime.now(UTC),
+    )
+
+
 def _is_maintenance_prompt_text(text: str | None) -> bool:
     lowered = (text or "").strip().lower()
     if not lowered:
@@ -207,6 +246,9 @@ class ContextIngestService:
             maintenance_detected = maintenance_detected or is_maintenance
             if text and not is_maintenance:
                 recent_messages.append(f"{role}: {text[:240]}")
+                structured_entry = _extract_structured_working_set_entry(text, role=role)
+                if structured_entry is not None and role in {"assistant", "user"}:
+                    working_set_entries.append(structured_entry)
 
             if role == "user" and text and not is_maintenance:
                 latest_user_text = text
@@ -307,6 +349,9 @@ class ContextIngestService:
                     symbol_names=_extract_symbols(response_text),
                 )
             )
+            structured_response_entry = _extract_structured_working_set_entry(response_text, role="assistant")
+            if structured_response_entry is not None:
+                working_set_entries.append(structured_response_entry)
 
         unique_records = self._dedupe(thread_id, candidate_records)
         if unique_records:
