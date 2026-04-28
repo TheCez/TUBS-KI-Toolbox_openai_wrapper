@@ -535,3 +535,74 @@ async def test_anthropic_reused_thread_keeps_active_turn_window(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["content"][0]["text"] == "Recovered active turn."
+
+
+@pytest.mark.asyncio
+async def test_anthropic_openclaw_uses_strict_wrapper_state_by_default(monkeypatch):
+    monkeypatch.setattr("app.api.routes.anthropic.get_cached_thread_id", lambda _key: "thread_123")
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert payload.get("thread") is None
+        return {
+            "type": "done",
+            "response": "Fresh wrapper-owned turn.",
+            "promptTokens": 5,
+            "responseTokens": 3,
+            "totalTokens": 8,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token", "User-Agent": "OpenClaw/1.0"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Fresh wrapper-owned turn."
+
+
+@pytest.mark.asyncio
+async def test_anthropic_retries_no_reply_as_low_information(monkeypatch):
+    calls = {"count": 0}
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "type": "done",
+                "response": "NO_REPLY",
+                "promptTokens": 5,
+                "responseTokens": 3,
+                "totalTokens": 8,
+                "thread": {"id": "thread_bad"},
+            }
+        assert payload.get("thread") is None
+        return {
+            "type": "done",
+            "response": "Real answer after retry.",
+            "promptTokens": 5,
+            "responseTokens": 3,
+            "totalTokens": 8,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Real answer after retry."
+    assert calls["count"] == 2

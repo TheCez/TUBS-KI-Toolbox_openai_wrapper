@@ -43,6 +43,7 @@ def resolve_thread_policy(*, endpoint: str, headers: Mapping[str, str] | None = 
     use_upstream_threads = os.getenv("TUBS_USE_UPSTREAM_THREADS", "true").strip().lower() == "true"
     strict_wrapper_state = os.getenv("TUBS_STRICT_WRAPPER_STATE_MODE", "false").strip().lower() == "true"
     reuse_upstream_thread = True
+    openclaw_strict_default = os.getenv("TUBS_OPENCLAW_STRICT_WRAPPER_STATE", "true").strip().lower() == "true"
 
     no_thread_clients = _csv_env("TUBS_NO_UPSTREAM_THREAD_CLIENTS")
     strict_clients = _csv_env("TUBS_STRICT_WRAPPER_STATE_CLIENTS")
@@ -51,6 +52,10 @@ def resolve_thread_policy(*, endpoint: str, headers: Mapping[str, str] | None = 
     if client_name in no_thread_clients or endpoint.lower() in no_thread_endpoints:
         reuse_upstream_thread = False
         use_upstream_threads = False
+    if client_name == "openclaw" and openclaw_strict_default:
+        strict_wrapper_state = True
+        use_upstream_threads = False
+        reuse_upstream_thread = False
     if client_name in strict_clients:
         strict_wrapper_state = True
         use_upstream_threads = False

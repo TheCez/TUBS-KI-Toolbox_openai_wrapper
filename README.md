@@ -55,6 +55,7 @@ environment:
   - TUBS_MAX_PROMPT_TOKENS=9000
   - TUBS_THREAD_PROMPT_TOKENS=9000
   - TUBS_USE_UPSTREAM_THREADS=true
+  - TUBS_OPENCLAW_STRICT_WRAPPER_STATE=true
   - TUBS_STRICT_WRAPPER_STATE_MODE=false
   - TUBS_NO_UPSTREAM_THREAD_CLIENTS=
   - TUBS_STRICT_WRAPPER_STATE_CLIENTS=
@@ -68,6 +69,7 @@ environment:
 - `TUBS_MAX_PROMPT_TOKENS` is the approximate prompt budget for requests that do not yet have a cached TU-BS thread.
 - `TUBS_THREAD_PROMPT_TOKENS` is the prompt budget used once the wrapper can rely on an existing TU-BS thread. In this version, it defaults to the same ceiling as `TUBS_MAX_PROMPT_TOKENS` unless you explicitly lower it.
 - `TUBS_USE_UPSTREAM_THREADS` controls whether reused TU-BS threads should receive only the latest active turn instead of full-history replay. It is `true` by default.
+- `TUBS_OPENCLAW_STRICT_WRAPPER_STATE` defaults to `true` and makes OpenClaw use wrapper-owned state instead of reusing TU-BS upstream threads, which avoids poisoned maintenance turns leaking back into normal chat.
 - `TUBS_STRICT_WRAPPER_STATE_MODE` disables TU-BS thread reuse completely and makes the wrapper-owned pinned state, hot state, and durable context the only continuity source.
 - `TUBS_NO_UPSTREAM_THREAD_CLIENTS` can disable TU-BS thread reuse for specific clients detected by user-agent, for example `openclaw,claude-code`.
 - `TUBS_STRICT_WRAPPER_STATE_CLIENTS` enables strict wrapper-state mode only for specific clients.
@@ -144,6 +146,7 @@ How it works:
 - In overflow requests, the wrapper switches to a bounded retrieval protocol: it stores the incoming turn first, sends only compact bridge context upstream, and requires at least one wrapper context retrieval before it accepts a final answer or external tool call.
 - The wrapper now also maintains a pinned state layer for exact non-semantic thread facts such as user name, assistant identity, bootstrap status, workflow status, and a compact hidden bridge summary. This pinned state is injected on every request, including reused TU-BS thread requests, so exact state does not depend on upstream thread memory alone.
 - The pinned state now also tracks task state, thread-control state, and compaction artifacts, which lets the wrapper reason about poisoned threads, recent rotations, and completed workflows without relying on semantic retrieval.
+- OpenClaw-style maintenance prompts such as `Pre-compaction memory flush ... reply with NO_REPLY` are now treated as maintenance traffic rather than normal task context, so they are not promoted into the active objective, hidden bridge, or semantic memory store.
 - `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
 - Additional exact-state tools are available when context tools are enabled:
   - `get_pinned_state`
@@ -154,6 +157,7 @@ How it works:
 - Context retrieval payloads are bounded before they go back into the next model turn. Search results, exact-record fetches, and thread-state responses are truncated and capped so retrieval itself does not become the next source of prompt bloat.
 - Wrapper context-tool instructions are also kept short and only added when those tools are actually exposed, so fresh chats do not pay a context-RAG instruction penalty they cannot use.
 - If a thread starts returning low-information filler such as `Nothing else to say here`, the wrapper increments poison counters and can temporarily disable TU-BS thread reuse for that logical conversation after `TUBS_LOW_INFORMATION_POISON_LIMIT` repeats.
+- `NO_REPLY` and repeated `NO_REPLYNO_REPLY` outputs are also treated as poisoned low-information replies, which triggers the same fresh-thread recovery path instead of accepting them as valid assistant answers.
 - Optional debug traces can be stored in Redis so you can inspect ingestion, recovery, retrieval, and poisoning events per logical thread.
 
 Useful related knobs:

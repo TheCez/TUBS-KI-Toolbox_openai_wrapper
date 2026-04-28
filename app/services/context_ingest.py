@@ -18,6 +18,12 @@ _PATH_RE = re.compile(r"[A-Za-z]:\\[^\r\n]+|/[^\r\n]+")
 _SYMBOL_RE = re.compile(r"\b(?:const|function|class|def|async def)\s+([A-Za-z_][A-Za-z0-9_]*)|<([A-Z][A-Za-z0-9_]*)\b")
 _LABEL_RE = re.compile(r"^\s*[•\-\*]?\s*(name|my name|creature|vibe|emoji)\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _EXACT_REPLY_RE = re.compile(r"reply(?: with exactly)?\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
+_MAINTENANCE_MARKERS = (
+    "pre-compaction memory flush",
+    "store durable memories only in memory/",
+    "treat workspace bootstrap/reference files such as memory.md, dreams.md, soul.md, tools.md, and agents.md as read-only",
+    "reply with no_reply",
+)
 
 
 def _message_role(message: Any) -> str:
@@ -125,6 +131,13 @@ def _build_hidden_bridge(latest_user_text: str | None, response_text: str | None
     return "\n".join(bridge_parts)[:900]
 
 
+def _is_maintenance_prompt_text(text: str | None) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in _MAINTENANCE_MARKERS)
+
+
 class ContextIngestService:
     def __init__(self) -> None:
         self._store = context_store()
@@ -139,14 +152,17 @@ class ContextIngestService:
         latest_user_text = None
         recent_messages: list[str] = []
         tool_failures: list[str] = []
+        maintenance_detected = False
 
         for index, message in enumerate(messages, start=1):
             role = _message_role(message)
             text = _text(message)
-            if text:
+            is_maintenance = _is_maintenance_prompt_text(text)
+            maintenance_detected = maintenance_detected or is_maintenance
+            if text and not is_maintenance:
                 recent_messages.append(f"{role}: {text[:240]}")
 
-            if role == "user" and text:
+            if role == "user" and text and not is_maintenance:
                 latest_user_text = text
                 candidate_records.append(
                     self._store.new_memory(
@@ -221,7 +237,9 @@ class ContextIngestService:
                         )
                     )
 
-        if response_text:
+        normalized_response = (response_text or "").strip().lower().replace(" ", "")
+        is_maintenance_no_reply = maintenance_detected and normalized_response in {"no_reply", "noreply", "noreplynoreply"}
+        if response_text and not is_maintenance_no_reply:
             candidate_records.append(
                 self._store.new_memory(
                     thread_id=thread_id,
@@ -247,6 +265,7 @@ class ContextIngestService:
             tool_failures=tool_failures,
             recent_messages=recent_messages,
             response_text=response_text,
+            maintenance_detected=maintenance_detected,
         )
 
     def _dedupe(self, thread_id: str, records: list) -> list:
@@ -269,11 +288,22 @@ class ContextIngestService:
         tool_failures: list[str],
         recent_messages: list[str],
         response_text: str | None,
+        maintenance_detected: bool,
     ) -> None:
         snapshot = self._store.get_hot_snapshot(thread_id)
         now = datetime.now(UTC)
         if snapshot is None:
             snapshot = HotContextSnapshot(thread_id=thread_id, updated_at=now)
+
+        if maintenance_detected:
+            snapshot.updated_at = now
+            self._store.set_hot_snapshot(snapshot)
+            record_debug_event(
+                thread_id,
+                "maintenance_prompt_ignored",
+                {"response_text": (response_text or "")[:120]},
+            )
+            return
 
         if latest_user_text:
             snapshot.current_objective = latest_user_text[:300]

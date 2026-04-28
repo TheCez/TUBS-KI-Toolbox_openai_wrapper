@@ -73,6 +73,8 @@ def _is_low_information_final_text(text: str) -> bool:
     if not normalized:
         return True
     low_information_phrases = {
+        "no_reply",
+        "noreply",
         "nothing else to say here",
         "nothing more to say here",
         "nothing else to add",
@@ -82,6 +84,8 @@ def _is_low_information_final_text(text: str) -> bool:
         "bootstrap pending",
     }
     if normalized in low_information_phrases:
+        return True
+    if normalized.replace(" ", "") in {"noreply", "noreplynoreply"}:
         return True
     if len(normalized) <= 32 and normalized.startswith("nothing"):
         return True

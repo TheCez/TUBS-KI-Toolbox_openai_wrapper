@@ -14,7 +14,7 @@ from app.services.context_runtime import pinned_state_instruction
 from app.services.openai_bridge import build_tubs_payload_from_messages
 from app.services.conversation_state import build_conversation_key, reset_thread_cache
 from app.services.debug_trace import record_debug_event
-from app.services.thread_policy import ThreadPolicy, policy_allows_upstream_thread
+from app.services.thread_policy import ThreadPolicy, policy_allows_upstream_thread, resolve_thread_policy
 from app.services.thread_recovery import reset_upstream_thread_state
 
 
@@ -219,6 +219,42 @@ def test_reset_upstream_thread_state_increments_rotation_count():
     assert snapshot is not None
     assert snapshot.thread_control.rotation_count == 1
     assert snapshot.thread_control.upstream_thread_id is None
+
+
+def test_maintenance_prompt_is_ignored_for_hot_context():
+    service = context_ingest_service()
+    thread_id = "thread-maintenance"
+    service.ingest_turn(
+        thread_id,
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Pre-compaction memory flush. Store durable memories only in memory/2026-04-28.md. "
+                    "Treat workspace bootstrap/reference files such as MEMORY.md, DREAMS.md, SOUL.md, TOOLS.md, "
+                    "and AGENTS.md as read-only during this flush; reply with NO_REPLY."
+                ),
+            }
+        ],
+        response_text="NO_REPLY",
+    )
+    from app.services.context_store import context_store
+
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    assert snapshot is not None
+    assert snapshot.current_objective is None
+    assert snapshot.hidden_bridge_summary is None
+    recent = context_store().recent(thread_id, 5)
+    assert not recent
+
+
+def test_openclaw_defaults_to_strict_wrapper_state(monkeypatch):
+    monkeypatch.delenv("TUBS_OPENCLAW_STRICT_WRAPPER_STATE", raising=False)
+    policy = resolve_thread_policy(endpoint="anthropic", headers={"User-Agent": "OpenClaw/1.0"})
+    assert policy.client_name == "openclaw"
+    assert policy.strict_wrapper_state is True
+    assert policy.use_upstream_threads is False
+    assert policy.reuse_upstream_thread is False
 
 
 @pytest.mark.asyncio
