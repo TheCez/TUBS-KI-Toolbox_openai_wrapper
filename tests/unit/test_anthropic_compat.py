@@ -122,7 +122,45 @@ async def test_anthropic_accepts_context_management(monkeypatch):
     assert response.json()["content"][0]["text"] == "Plain answer"
 
 
-def test_thread_policy_defaults_claude_code_to_strict_minimal(monkeypatch):
+@pytest.mark.asyncio
+async def test_anthropic_accepts_unknown_beta_top_level_and_message_fields(monkeypatch):
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "[User]: Hello" in payload["prompt"]
+        return {
+            "type": "done",
+            "response": "Plain answer",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.anthropic.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-token"},
+            json={
+                "model": "claude-sonnet-4-0",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Hello",
+                        "id": "msg_123",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                "container": {"id": "container_1"},
+                "mcp_servers": [{"name": "local"}],
+                "extra_beta_flag": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Plain answer"
+
+
+def test_thread_policy_defaults_claude_code_to_strict_non_minimal(monkeypatch):
     monkeypatch.delenv("TUBS_CLAUDE_CODE_STRICT_WRAPPER_STATE", raising=False)
     monkeypatch.delenv("TUBS_CLAUDE_CODE_MINIMAL_MODE", raising=False)
 
@@ -133,13 +171,15 @@ def test_thread_policy_defaults_claude_code_to_strict_minimal(monkeypatch):
 
     assert policy.client_name == "claude-code"
     assert policy.strict_wrapper_state is True
-    assert policy.minimal_upstream_mode is True
+    assert policy.minimal_upstream_mode is False
     assert policy.use_upstream_threads is False
     assert policy.reuse_upstream_thread is False
 
 
 @pytest.mark.asyncio
 async def test_anthropic_claude_code_minimal_mode_skips_wrapper_context_augmentation(monkeypatch):
+    monkeypatch.setenv("TUBS_CLAUDE_CODE_MINIMAL_MODE", "true")
+
     async def fake_send_tubs_request(payload, images, bearer_token, stream):
         assert "Durable thread state summary:" not in payload["prompt"]
         assert "Fresh thread rehydration:" not in (payload.get("customInstructions") or "")

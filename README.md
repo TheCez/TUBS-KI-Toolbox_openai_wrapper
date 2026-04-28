@@ -60,7 +60,7 @@ environment:
   - TUBS_OPENCLAW_STRICT_WRAPPER_STATE=true
   - TUBS_OPENCLAW_MINIMAL_MODE=true
   - TUBS_CLAUDE_CODE_STRICT_WRAPPER_STATE=true
-  - TUBS_CLAUDE_CODE_MINIMAL_MODE=true
+  - TUBS_CLAUDE_CODE_MINIMAL_MODE=false
   - TUBS_STRICT_WRAPPER_STATE_MODE=false
   - TUBS_NO_UPSTREAM_THREAD_CLIENTS=
   - TUBS_STRICT_WRAPPER_STATE_CLIENTS=
@@ -77,7 +77,7 @@ environment:
 - `TUBS_OPENCLAW_STRICT_WRAPPER_STATE` defaults to `true` and makes OpenClaw use wrapper-owned state instead of reusing TU-BS upstream threads, which avoids poisoned maintenance turns leaking back into normal chat.
 - `TUBS_OPENCLAW_MINIMAL_MODE` defaults to `true` and keeps OpenClaw on the simplest Anthropic path: no staged-ingestion bootstrap and no wrapper retrieval loop unless you explicitly disable the minimal mode.
 - `TUBS_CLAUDE_CODE_STRICT_WRAPPER_STATE` defaults to `true` and keeps Claude Code off reused TU-BS upstream threads unless you explicitly opt back in.
-- `TUBS_CLAUDE_CODE_MINIMAL_MODE` defaults to `true` and keeps Claude Code on a lighter Anthropic translation path: no staged-ingestion bootstrap, no wrapper context-tool loop, and no synthetic thread-summary injection by default.
+- `TUBS_CLAUDE_CODE_MINIMAL_MODE` defaults to `false`. This keeps Claude Code on the safer wrapper-owned state path by default while still allowing the richer Anthropic context/retry behavior unless you explicitly force minimal mode on.
 - `TUBS_STRICT_WRAPPER_STATE_MODE` disables TU-BS thread reuse completely and makes the wrapper-owned pinned state, hot state, and durable context the only continuity source.
 - `TUBS_NO_UPSTREAM_THREAD_CLIENTS` can disable TU-BS thread reuse for specific clients detected by user-agent, for example `openclaw,claude-code`.
 - `TUBS_STRICT_WRAPPER_STATE_CLIENTS` enables strict wrapper-state mode only for specific clients.

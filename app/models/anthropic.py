@@ -32,28 +32,28 @@ class ToolResultContentBlock(BaseModel):
     is_error: Optional[bool] = None
 
 class Message(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     role: Literal["user", "assistant"]
     content: Union[str, List[Union[TextContentBlock, ImageContentBlock, ToolUseContentBlock, ToolResultContentBlock, Dict[str, Any]]]]
 
 class Tool(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     name: str
     description: Optional[str] = None
     input_schema: Dict[str, Any]
 
 class ToolChoice(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Literal["auto", "any", "tool", "none"]
     name: Optional[str] = None
 
 class ThinkingConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     type: Optional[Literal["enabled", "disabled"]] = None
     budget_tokens: Optional[int] = None
 
 class MessageRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     model: str
     messages: List[Message]
     system: Optional[Union[str, List[TextContentBlock]]] = None
