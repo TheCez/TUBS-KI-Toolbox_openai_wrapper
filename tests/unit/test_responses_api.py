@@ -1,5 +1,6 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from fastapi import HTTPException
 
 from app.main import app
 
@@ -363,3 +364,40 @@ async def test_responses_downgrades_invalid_tool_call_to_text(monkeypatch):
     assert data["output_text"]
     assert "missing required fields: questions" in data["output_text"]
     assert not any(item["type"] == "function_call" for item in data["output"])
+
+
+@pytest.mark.asyncio
+async def test_responses_rotates_exhausted_tubs_thread(monkeypatch):
+    monkeypatch.setattr("app.api.routes.responses.get_cached_thread_id", lambda _key: "thread_exhausted")
+    calls = {"count": 0}
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            assert payload.get("thread") == "thread_exhausted"
+            raise HTTPException(status_code=429, detail="Sie haben das Token limit für dieses Gespräch überschritten.")
+        assert payload.get("thread") is None
+        return {
+            "type": "done",
+            "response": "Recovered response",
+            "promptTokens": 5,
+            "responseTokens": 3,
+            "totalTokens": 8,
+            "thread": {"id": "thread_fresh"},
+        }
+
+    monkeypatch.setattr("app.api.routes.responses.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/responses",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "input": "Please continue the task",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["output_text"] == "Recovered response"
+    assert calls["count"] == 2

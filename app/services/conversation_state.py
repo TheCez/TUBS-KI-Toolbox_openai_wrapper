@@ -29,6 +29,8 @@ class ThreadCacheBackend(Protocol):
 
     def set(self, conversation_key: str, thread_id: str, ttl_seconds: int) -> None: ...
 
+    def delete(self, conversation_key: str) -> None: ...
+
     def clear(self) -> None: ...
 
 
@@ -50,6 +52,9 @@ class InMemoryThreadCache:
 
     def set(self, conversation_key: str, thread_id: str, ttl_seconds: int) -> None:
         self._cache[conversation_key] = (thread_id, time.time())
+
+    def delete(self, conversation_key: str) -> None:
+        self._cache.pop(conversation_key, None)
 
     def clear(self) -> None:
         self._cache.clear()
@@ -73,6 +78,12 @@ class RedisThreadCache:
 
     def set(self, conversation_key: str, thread_id: str, ttl_seconds: int) -> None:
         self._client.set(self._key(conversation_key), thread_id, ex=ttl_seconds)
+
+    def delete(self, conversation_key: str) -> None:
+        try:
+            self._client.delete(self._key(conversation_key))
+        except RedisError:
+            pass
 
     def clear(self) -> None:
         try:
@@ -194,6 +205,13 @@ def remember_thread_id(conversation_key: str, response_payload: dict[str, Any] |
             _backend().set(conversation_key, thread_id.strip(), _thread_cache_ttl_seconds())
         except RedisError:
             pass
+
+
+def forget_thread_id(conversation_key: str) -> None:
+    try:
+        _backend().delete(conversation_key)
+    except RedisError:
+        pass
 
 
 def reset_thread_cache() -> None:

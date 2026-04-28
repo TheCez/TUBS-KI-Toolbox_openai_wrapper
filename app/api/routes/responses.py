@@ -25,6 +25,7 @@ from app.services.openai_bridge import (
 )
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml
 from app.services.staged_ingestion import prepare_staged_messages
+from app.services.thread_recovery import retry_with_fresh_thread_on_limit
 from app.services.tool_validation import validate_tool_calls
 from app.services.tubs_client import async_send_tubs_request
 
@@ -96,19 +97,46 @@ async def create_response(
         messages=conversation_messages,
         explicit_user=body.user,
     )
-    thread_id = get_cached_thread_id(conversation_key)
     context_thread_id = conversation_key
     normalized_messages = response_input_to_messages(body.input)
-    staged = await prepare_staged_messages(
-        model=body.model,
-        messages=normalized_messages,
-        thread_id=thread_id,
-        conversation_key=conversation_key,
-        bearer_token=token,
-    )
     response_format = body.text.format if body.text and body.text.format else None
-    effective_messages = augment_openai_messages_with_context(staged.messages, context_thread_id)
+
+    async def _build_non_stream_response(force_fresh_thread: bool):
+        thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
+        staged = await prepare_staged_messages(
+            model=body.model,
+            messages=normalized_messages,
+            thread_id=thread_id,
+            conversation_key=conversation_key,
+            bearer_token=token,
+        )
+        effective_messages = augment_openai_messages_with_context(staged.messages, context_thread_id)
+        resolved = await resolve_openai_context_tools(
+            model=body.model,
+            messages=effective_messages,
+            thread_id=staged.thread_id,
+            context_thread_id=context_thread_id,
+            bearer_token=token,
+            instructions=body.instructions,
+            response_format=response_format,
+            tools=body.tools,
+            reasoning=body.reasoning,
+            max_output_tokens=body.max_output_tokens,
+            tool_choice=body.tool_choice,
+            send_request=async_send_tubs_request,
+        )
+        return resolved.final_response
+
     if body.stream:
+        thread_id = get_cached_thread_id(conversation_key)
+        staged = await prepare_staged_messages(
+            model=body.model,
+            messages=normalized_messages,
+            thread_id=thread_id,
+            conversation_key=conversation_key,
+            bearer_token=token,
+        )
+        effective_messages = augment_openai_messages_with_context(staged.messages, context_thread_id)
         payload, images, model_str = build_tubs_payload_from_messages(
             model=body.model,
             messages=effective_messages,
@@ -127,21 +155,10 @@ async def create_response(
             stream=True,
         )
     else:
-        resolved = await resolve_openai_context_tools(
-            model=body.model,
-            messages=effective_messages,
-            thread_id=staged.thread_id,
-            context_thread_id=context_thread_id,
-            bearer_token=token,
-            instructions=body.instructions,
-            response_format=response_format,
-            tools=body.tools,
-            reasoning=body.reasoning,
-            max_output_tokens=body.max_output_tokens,
-            tool_choice=body.tool_choice,
-            send_request=async_send_tubs_request,
+        response_or_stream = await retry_with_fresh_thread_on_limit(
+            conversation_key,
+            _build_non_stream_response,
         )
-        response_or_stream = resolved.final_response
         model_str = str(body.model)
 
     response_id = f"resp_{uuid.uuid4().hex}"

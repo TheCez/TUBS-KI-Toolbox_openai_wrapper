@@ -29,6 +29,7 @@ from app.services.anthropic_translation import (
 from app.services.openai_bridge import build_custom_instructions, effective_prompt_token_budget
 from app.services.tubs_client import async_send_tubs_request
 from app.services.staged_ingestion import prepare_staged_messages
+from app.services.thread_recovery import retry_with_fresh_thread_on_limit
 from app.services.model_map import resolve_model
 from app.services.prompt import (
     truncate_at_stop, parse_tool_calls_xml, is_tool_xml_complete, has_tool_xml_start,
@@ -98,17 +99,7 @@ async def anthropic_messages(
         model=body.model,
         messages=body.messages,
     )
-    thread_id = get_cached_thread_id(conversation_key)
     context_thread_id = conversation_key
-    staged = await prepare_staged_messages(
-        model=body.model,
-        messages=body.messages,
-        thread_id=thread_id,
-        conversation_key=conversation_key,
-        bearer_token=token,
-    )
-    effective_messages = augment_anthropic_messages_with_context(staged.messages, context_thread_id)
-    images = get_images_from_anthropic_messages(effective_messages)
 
     system_messages = []
     if body.system:
@@ -117,35 +108,16 @@ async def anthropic_messages(
         elif isinstance(body.system, list):
             system_messages.extend(part.text for part in body.system if hasattr(part, "text"))
 
-    custom_instructions = build_custom_instructions(
-        messages=[],
-        instructions="\n".join(system_messages).strip() or None,
-        tools=body.tools,
-        reasoning=_thinking_to_reasoning(body.thinking),
-        max_output_tokens=body.max_tokens,
-        tool_choice=_tool_choice_to_openai_style(body.tool_choice),
-    )
-    prompt_string = build_prompt_with_compaction(
-        effective_messages,
-        compile_prompt=compile_anthropic_messages_to_prompt,
-        thread_id=staged.thread_id,
-        prompt_token_budget=effective_prompt_token_budget(staged.thread_id, custom_instructions),
-    )
-
-    if body.stream:
-        tubs_payload = TubsChatRequest(
-            thread=staged.thread_id,
-            prompt=prompt_string,
-            model=resolve_model(body.model),
-            customInstructions=custom_instructions,
-        ).model_dump(exclude_none=True)
-        response_or_stream = await async_send_tubs_request(
-            payload=tubs_payload,
-            images=images,
+    async def _build_non_stream_response(force_fresh_thread: bool):
+        thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
+        staged = await prepare_staged_messages(
+            model=body.model,
+            messages=body.messages,
+            thread_id=thread_id,
+            conversation_key=conversation_key,
             bearer_token=token,
-            stream=True,
         )
-    else:
+        effective_messages = augment_anthropic_messages_with_context(staged.messages, context_thread_id)
         resolved = await resolve_anthropic_context_tools(
             model=body.model,
             messages=effective_messages,
@@ -159,7 +131,50 @@ async def anthropic_messages(
             reasoning=_thinking_to_reasoning(body.thinking),
             send_request=async_send_tubs_request,
         )
-        response_or_stream = resolved.final_response
+        return resolved.final_response
+
+    if body.stream:
+        thread_id = get_cached_thread_id(conversation_key)
+        staged = await prepare_staged_messages(
+            model=body.model,
+            messages=body.messages,
+            thread_id=thread_id,
+            conversation_key=conversation_key,
+            bearer_token=token,
+        )
+        effective_messages = augment_anthropic_messages_with_context(staged.messages, context_thread_id)
+        images = get_images_from_anthropic_messages(effective_messages)
+        custom_instructions = build_custom_instructions(
+            messages=[],
+            instructions="\n".join(system_messages).strip() or None,
+            tools=body.tools,
+            reasoning=_thinking_to_reasoning(body.thinking),
+            max_output_tokens=body.max_tokens,
+            tool_choice=_tool_choice_to_openai_style(body.tool_choice),
+        )
+        prompt_string = build_prompt_with_compaction(
+            effective_messages,
+            compile_prompt=compile_anthropic_messages_to_prompt,
+            thread_id=staged.thread_id,
+            prompt_token_budget=effective_prompt_token_budget(staged.thread_id, custom_instructions),
+        )
+        tubs_payload = TubsChatRequest(
+            thread=staged.thread_id,
+            prompt=prompt_string,
+            model=resolve_model(body.model),
+            customInstructions=custom_instructions,
+        ).model_dump(exclude_none=True)
+        response_or_stream = await async_send_tubs_request(
+            payload=tubs_payload,
+            images=images,
+            bearer_token=token,
+            stream=True,
+        )
+    else:
+        response_or_stream = await retry_with_fresh_thread_on_limit(
+            conversation_key,
+            _build_non_stream_response,
+        )
 
     req_id = f"msg_{uuid.uuid4().hex}"
 

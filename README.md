@@ -80,6 +80,7 @@ Practical meaning:
 - The wrapper now also budgets for `customInstructions` overhead before compacting the prompt. That means tool schemas, reasoning directives, and wrapper hints are counted as part of the real upstream request budget instead of being ignored.
 - Tool-call instructions are now deliberately compact. The wrapper no longer dumps full tool schemas into `customInstructions`; it keeps only a short XML contract plus a compact required-arguments summary so more real prompt context survives before compaction.
 - Reasoning effort and max-output guidance are also emitted in a shorter form to reduce instruction overhead on every request.
+- If TU-BS rejects a non-stream request with a conversation-level token-limit error such as `Sie haben das Token limit für dieses Gespräch überschritten.`, the wrapper now treats that as an exhausted upstream thread, drops the cached TU-BS thread for that logical conversation, clears any staged-ingestion progress tied to it, and retries once on a fresh TU-BS thread.
 
 Useful related knobs:
 
@@ -150,6 +151,7 @@ Recommended interpretation:
 - TU-BS threads are no longer the source of truth for long conversations.
 - They still help with short follow-up continuity and can reduce the amount of replay needed when the upstream behaves well.
 - If TU-BS thread replay or thread-side compaction is weak, the wrapper can still recover older state through durable retrieval.
+- If a TU-BS thread becomes conversation-exhausted, the wrapper now automatically rotates to a fresh upstream thread for non-stream requests and relies on the wrapper-owned durable context layer to restore the most relevant state.
 - Because of that, TU-BS threads are no longer critical, but they are also not useless.
 
 Current recommendation:

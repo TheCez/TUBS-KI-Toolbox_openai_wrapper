@@ -1,5 +1,6 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from fastapi import HTTPException
 
 from app.main import app
 from app.services.conversation_state import reset_thread_cache
@@ -428,3 +429,41 @@ async def test_chat_completions_reuses_tubs_thread_and_compacts_history(monkeypa
 
     assert first.status_code == 200
     assert second.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_rotates_exhausted_tubs_thread(monkeypatch):
+    reset_thread_cache()
+    monkeypatch.setattr("app.api.routes.chat.get_cached_thread_id", lambda _key: "thread_exhausted")
+    calls = {"count": 0}
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            assert payload.get("thread") == "thread_exhausted"
+            raise HTTPException(status_code=429, detail="Sie haben das Token limit für dieses Gespräch überschritten.")
+        assert payload.get("thread") is None
+        return {
+            "type": "done",
+            "response": "Recovered on a fresh thread",
+            "promptTokens": 5,
+            "responseTokens": 3,
+            "totalTokens": 8,
+            "thread": {"id": "thread_fresh"},
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "Please continue the task"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "Recovered on a fresh thread"
+    assert calls["count"] == 2

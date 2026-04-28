@@ -29,6 +29,8 @@ class IngestionStoreBackend(Protocol):
 
     def set(self, conversation_key: str, progress: IngestionProgress, ttl_seconds: int) -> None: ...
 
+    def delete(self, conversation_key: str) -> None: ...
+
     def clear(self) -> None: ...
 
 
@@ -50,6 +52,9 @@ class InMemoryIngestionStore:
 
     def set(self, conversation_key: str, progress: IngestionProgress, ttl_seconds: int) -> None:
         self._cache[conversation_key] = (progress, time.time())
+
+    def delete(self, conversation_key: str) -> None:
+        self._cache.pop(conversation_key, None)
 
     def clear(self) -> None:
         self._cache.clear()
@@ -77,6 +82,12 @@ class RedisIngestionStore:
 
     def set(self, conversation_key: str, progress: IngestionProgress, ttl_seconds: int) -> None:
         self._client.set(self._key(conversation_key), json.dumps(asdict(progress)), ex=ttl_seconds)
+
+    def delete(self, conversation_key: str) -> None:
+        try:
+            self._client.delete(self._key(conversation_key))
+        except RedisError:
+            pass
 
     def clear(self) -> None:
         try:
@@ -141,6 +152,13 @@ def get_ingestion_progress(conversation_key: str) -> IngestionProgress | None:
 def remember_ingestion_progress(conversation_key: str, progress: IngestionProgress) -> None:
     try:
         _backend().set(conversation_key, progress, _ingestion_ttl_seconds())
+    except RedisError:
+        pass
+
+
+def forget_ingestion_progress(conversation_key: str) -> None:
+    try:
+        _backend().delete(conversation_key)
     except RedisError:
         pass
 
