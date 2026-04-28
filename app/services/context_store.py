@@ -27,10 +27,42 @@ from app.services.context_embeddings import cosine_similarity, embed_text, embed
 
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]+")
+_KIND_WEIGHTS = {
+    "goal": 0.35,
+    "constraint": 0.3,
+    "decision": 0.28,
+    "tool_failure": 0.22,
+    "file_fact": 0.22,
+    "code_summary": 0.2,
+    "user_request": 0.18,
+}
 
 
 def _token_set(text: str) -> set[str]:
     return set(_TOKEN_RE.findall((text or "").lower()))
+
+
+def _score_record(record: ContextMemoryRecord, query: str, query_embedding: list[float]) -> float:
+    score = cosine_similarity(query_embedding, record.embedding)
+    lowered_query = query.lower()
+    query_tokens = _token_set(query)
+    record_tokens = _token_set(f"{record.title}\n{record.summary}\n{record.content}")
+    if query_tokens and record_tokens:
+        overlap = len(query_tokens & record_tokens) / max(1, len(query_tokens))
+        score += overlap * 0.45
+    if lowered_query and lowered_query in record.summary.lower():
+        score += 0.35
+    if lowered_query and lowered_query in record.title.lower():
+        score += 0.2
+    for path in record.file_paths:
+        if path and path.lower() in lowered_query:
+            score += 0.35
+    for symbol in record.symbol_names:
+        if symbol and symbol.lower() in lowered_query:
+            score += 0.3
+    score += _KIND_WEIGHTS.get(record.kind, 0.0)
+    score += record.importance * 0.1 + record.recency_score * 0.05
+    return score
 
 
 class DurableContextBackend(Protocol):
@@ -91,18 +123,7 @@ class InMemoryDurableContextStore:
             if symbols and not any(symbol in record.symbol_names for symbol in symbols):
                 continue
 
-            score = cosine_similarity(query_embedding, record.embedding)
-            lowered_query = query.lower()
-            query_tokens = _token_set(query)
-            record_tokens = _token_set(f"{record.title}\n{record.summary}\n{record.content}")
-            if query_tokens and record_tokens:
-                overlap = len(query_tokens & record_tokens) / max(1, len(query_tokens))
-                score += overlap * 0.45
-            if lowered_query and lowered_query in record.summary.lower():
-                score += 0.35
-            if lowered_query and lowered_query in record.title.lower():
-                score += 0.2
-            score += record.importance * 0.1 + record.recency_score * 0.05
+            score = _score_record(record, query, query_embedding)
             results.append({"record": record, "score": score})
 
         results.sort(key=lambda item: item["score"], reverse=True)
@@ -285,10 +306,7 @@ class PostgresDurableContextStore:
                 continue
             if symbols and not any(symbol in record.symbol_names for symbol in symbols):
                 continue
-            score = cosine_similarity(query_embedding, record.embedding)
-            record_tokens = _token_set(f"{record.title}\n{record.summary}\n{record.content}")
-            if query_tokens and record_tokens:
-                score += (len(query_tokens & record_tokens) / max(1, len(query_tokens))) * 0.45
+            score = _score_record(record, query, query_embedding)
             scored.append({"record": record, "score": score})
         scored.sort(key=lambda item: item["score"], reverse=True)
         return scored[:top_k]

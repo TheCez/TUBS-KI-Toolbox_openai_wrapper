@@ -26,10 +26,15 @@ from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
     _is_low_information_final_text,
     augment_openai_messages_with_context,
+    fresh_thread_rehydration_instruction,
+    note_good_answer,
+    note_low_information_reply,
     pinned_state_instruction,
     resolve_openai_context_tools,
     _overflow_active_for_openai_messages,
 )
+from app.services.context_store import context_store
+from app.services.debug_trace import record_debug_event
 from app.services.openai_bridge import (
     build_tubs_payload_from_messages,
     parse_assistant_response,
@@ -38,6 +43,7 @@ from app.services.openai_bridge import (
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml
 from app.services.staged_ingestion import prepare_staged_messages
 from app.services.thread_recovery import retry_with_fresh_thread_on_limit
+from app.services.thread_policy import policy_allows_upstream_thread, resolve_thread_policy
 from app.services.tool_validation import validate_tool_calls
 from app.services.tubs_client import async_send_tubs_request
 
@@ -110,6 +116,7 @@ async def create_response(
         explicit_user=body.user,
     )
     context_thread_id = conversation_key
+    policy = resolve_thread_policy(endpoint="responses", headers=request.headers)
     normalized_messages = response_input_to_messages(body.input)
     response_format = body.text.format if body.text and body.text.format else None
     low_information_retry_note = (
@@ -119,8 +126,10 @@ async def create_response(
     )
 
     async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
-        thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
+        allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
+        thread_id = None if force_fresh_thread or policy.strict_wrapper_state or not allow_upstream_threads else get_cached_thread_id(conversation_key)
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=normalized_messages,
@@ -128,7 +137,11 @@ async def create_response(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        working_messages = messages_for_upstream_thread(
+            staged.messages,
+            staged.thread_id,
+            use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
+        )
         effective_messages = (
             working_messages
             if staged.thread_id
@@ -137,7 +150,7 @@ async def create_response(
         overflow_mode = staged.applied or _overflow_active_for_openai_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            instructions="\n\n".join(part for part in [pinned_instruction, body.instructions, retry_note] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, body.instructions, retry_note] if part) or None,
             response_format=response_format,
             tools=body.tools,
             reasoning=body.reasoning,
@@ -152,7 +165,7 @@ async def create_response(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            instructions="\n\n".join(part for part in [pinned_instruction, body.instructions, retry_note] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, body.instructions, retry_note] if part) or None,
             response_format=response_format,
             tools=body.tools,
             reasoning=body.reasoning,
@@ -164,8 +177,12 @@ async def create_response(
         return resolved.final_response
 
     if body.stream:
+        allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = get_cached_thread_id(conversation_key)
+        if policy.strict_wrapper_state or not allow_upstream_threads:
+            thread_id = None
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=normalized_messages,
@@ -173,7 +190,11 @@ async def create_response(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        working_messages = messages_for_upstream_thread(
+            staged.messages,
+            staged.thread_id,
+            use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
+        )
         effective_messages = (
             working_messages
             if staged.thread_id
@@ -183,7 +204,7 @@ async def create_response(
             model=body.model,
             messages=effective_messages,
             thread_id=staged.thread_id,
-            instructions="\n\n".join(part for part in [pinned_instruction, body.instructions] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, body.instructions] if part) or None,
             response_format=response_format,
             tools=body.tools,
             reasoning=body.reasoning,
@@ -426,7 +447,12 @@ async def create_response(
         tools=body.tools,
     )
     remember_thread_id(conversation_key, response_or_stream)
+    snapshot = context_store().get_hot_snapshot(context_thread_id)
+    if snapshot is not None and isinstance(response_or_stream.get("thread"), dict):
+        snapshot.thread_control.upstream_thread_id = response_or_stream["thread"].get("id")
+        context_store().set_hot_snapshot(snapshot)
     if not tool_calls and _is_low_information_final_text(output_text):
+        note_low_information_reply(context_thread_id)
         context_ingest_service().ingest_turn(context_thread_id, normalized_messages)
         forget_thread_id(conversation_key)
         response_or_stream = await _build_non_stream_response(True, low_information_retry_note)
@@ -435,6 +461,22 @@ async def create_response(
             tools=body.tools,
         )
         remember_thread_id(conversation_key, response_or_stream)
+        snapshot = context_store().get_hot_snapshot(context_thread_id)
+        if snapshot is not None and isinstance(response_or_stream.get("thread"), dict):
+            snapshot.thread_control.upstream_thread_id = response_or_stream["thread"].get("id")
+            context_store().set_hot_snapshot(snapshot)
+    if not _is_low_information_final_text(output_text):
+        note_good_answer(context_thread_id)
+    record_debug_event(
+        context_thread_id,
+        "responses_non_stream_completed",
+        {
+            "client": policy.client_name,
+            "strict_wrapper_state": policy.strict_wrapper_state,
+            "used_upstream_threads": policy.use_upstream_threads,
+            "has_tool_calls": bool(tool_calls),
+        },
+    )
     context_ingest_service().ingest_turn(context_thread_id, normalized_messages, response_text=output_text or None)
     output_items = []
     if output_text:

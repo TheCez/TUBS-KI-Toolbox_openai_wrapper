@@ -27,10 +27,14 @@ from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
     _is_low_information_final_text,
     augment_anthropic_messages_with_context,
+    fresh_thread_rehydration_instruction,
+    note_good_answer,
+    note_low_information_reply,
     pinned_state_instruction,
     resolve_anthropic_context_tools,
     _overflow_active_for_anthropic_messages,
 )
+from app.services.context_store import context_store
 from app.services.anthropic_translation import (
     compile_anthropic_messages_to_prompt, get_images_from_anthropic_messages,
 )
@@ -38,10 +42,12 @@ from app.services.openai_bridge import build_custom_instructions, effective_prom
 from app.services.tubs_client import async_send_tubs_request
 from app.services.staged_ingestion import prepare_staged_messages
 from app.services.thread_recovery import retry_with_fresh_thread_on_limit
+from app.services.debug_trace import record_debug_event
 from app.services.model_map import resolve_model
 from app.services.prompt import (
     truncate_at_stop, parse_tool_calls_xml, is_tool_xml_complete, has_tool_xml_start,
 )
+from app.services.thread_policy import policy_allows_upstream_thread, resolve_thread_policy
 from app.services.tool_validation import validate_tool_calls
 from app.models.tubs import TubsChatRequest
 
@@ -108,6 +114,7 @@ async def anthropic_messages(
         messages=body.messages,
     )
     context_thread_id = conversation_key
+    policy = resolve_thread_policy(endpoint="anthropic", headers=request.headers)
 
     system_messages = []
     if body.system:
@@ -122,8 +129,10 @@ async def anthropic_messages(
     )
 
     async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
-        thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
+        allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
+        thread_id = None if force_fresh_thread or policy.strict_wrapper_state or not allow_upstream_threads else get_cached_thread_id(conversation_key)
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -131,7 +140,11 @@ async def anthropic_messages(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        working_messages = messages_for_upstream_thread(
+            staged.messages,
+            staged.thread_id,
+            use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
+        )
         effective_messages = (
             working_messages
             if staged.thread_id
@@ -141,7 +154,7 @@ async def anthropic_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
             system_instructions="\n\n".join(
-                part for part in [pinned_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
+                part for part in [pinned_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
             ) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
@@ -157,7 +170,7 @@ async def anthropic_messages(
             context_thread_id=context_thread_id,
             bearer_token=token,
             system_instructions="\n\n".join(
-                part for part in [pinned_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
+                part for part in [pinned_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None, retry_note] if part
             ) or None,
             tools=body.tools,
             max_output_tokens=body.max_tokens,
@@ -169,8 +182,12 @@ async def anthropic_messages(
         return resolved.final_response
 
     if body.stream:
+        allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
         thread_id = get_cached_thread_id(conversation_key)
+        if policy.strict_wrapper_state or not allow_upstream_threads:
+            thread_id = None
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -178,7 +195,11 @@ async def anthropic_messages(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        working_messages = messages_for_upstream_thread(
+            staged.messages,
+            staged.thread_id,
+            use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
+        )
         effective_messages = (
             working_messages
             if staged.thread_id
@@ -187,7 +208,7 @@ async def anthropic_messages(
         images = get_images_from_anthropic_messages(effective_messages)
         custom_instructions = build_custom_instructions(
             messages=[],
-            instructions="\n\n".join(part for part in [pinned_instruction, "\n".join(system_messages).strip() or None] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, "\n".join(system_messages).strip() or None] if part) or None,
             tools=body.tools,
             reasoning=_thinking_to_reasoning(body.thinking),
             max_output_tokens=body.max_tokens,
@@ -376,9 +397,14 @@ async def anthropic_messages(
 
     response_text = response_or_stream.get("response", "")
     remember_thread_id(conversation_key, response_or_stream)
+    snapshot = context_store().get_hot_snapshot(context_thread_id)
+    if snapshot is not None and isinstance(response_or_stream.get("thread"), dict):
+        snapshot.thread_control.upstream_thread_id = response_or_stream["thread"].get("id")
+        context_store().set_hot_snapshot(snapshot)
     p_tokens = response_or_stream.get("promptTokens", 0)
     c_tokens = response_or_stream.get("responseTokens", 0)
     if _is_low_information_final_text(response_text):
+        note_low_information_reply(context_thread_id)
         context_ingest_service().ingest_turn(context_thread_id, body.messages)
         forget_thread_id(conversation_key)
         response_or_stream = await _build_non_stream_response(True, low_information_retry_note)
@@ -386,6 +412,12 @@ async def anthropic_messages(
         remember_thread_id(conversation_key, response_or_stream)
         p_tokens = response_or_stream.get("promptTokens", 0)
         c_tokens = response_or_stream.get("responseTokens", 0)
+        snapshot = context_store().get_hot_snapshot(context_thread_id)
+        if snapshot is not None and isinstance(response_or_stream.get("thread"), dict):
+            snapshot.thread_control.upstream_thread_id = response_or_stream["thread"].get("id")
+            context_store().set_hot_snapshot(snapshot)
+    if not _is_low_information_final_text(response_text):
+        note_good_answer(context_thread_id)
 
     stop_reason = "end_turn"
     content_blocks = []
@@ -419,6 +451,16 @@ async def anthropic_messages(
         context_thread_id,
         body.messages,
         response_text=response_text or None,
+    )
+    record_debug_event(
+        context_thread_id,
+        "anthropic_non_stream_completed",
+        {
+            "client": policy.client_name,
+            "strict_wrapper_state": policy.strict_wrapper_state,
+            "used_upstream_threads": policy.use_upstream_threads,
+            "stop_reason": stop_reason,
+        },
     )
 
     return MessageResponse(

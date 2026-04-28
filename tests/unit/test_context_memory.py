@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -6,11 +7,15 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.models.openai import Message
 from app.services.context_ingest import context_ingest_service
+from app.services.context_runtime import fresh_thread_rehydration_instruction
 from app.services.context_store import reset_context_store
 from app.services.context_tools import context_tool_instruction, context_tools_for_openai, execute_context_tool
 from app.services.context_runtime import pinned_state_instruction
 from app.services.openai_bridge import build_tubs_payload_from_messages
 from app.services.conversation_state import build_conversation_key, reset_thread_cache
+from app.services.debug_trace import record_debug_event
+from app.services.thread_policy import ThreadPolicy, policy_allows_upstream_thread
+from app.services.thread_recovery import reset_upstream_thread_state
 
 
 @pytest.fixture(autouse=True)
@@ -144,6 +149,76 @@ def test_get_context_by_ids_is_bounded_for_prompt_safety(monkeypatch):
     )
     assert len(details_payload["records"]) == 1
     assert len(details_payload["records"][0]["content"]) <= 120
+
+
+def test_pinned_state_tools_and_debug_trace_round_trip():
+    service = context_ingest_service()
+    thread_id = "thread-tools"
+    service.ingest_turn(
+        thread_id,
+        [{"role": "user", "content": "Name : Jarvis\nMy name : Ajay"}],
+        response_text="Stored.",
+    )
+    updated = json.loads(
+        execute_context_tool(
+            "set_pinned_state_field",
+            json.dumps({"field": "workflow_kind", "value": "bootstrap"}),
+            thread_id,
+        )
+    )
+    assert updated["updated"] is True
+    completed = json.loads(
+        execute_context_tool(
+            "mark_workflow_complete",
+            json.dumps({"summary": "Bootstrap finished cleanly."}),
+            thread_id,
+        )
+    )
+    assert completed["workflow_status"] == "completed"
+    pinned = json.loads(execute_context_tool("get_pinned_state", "{}", thread_id))
+    assert pinned["pinned_state"]["user_identity"]["name"] == "Ajay"
+    assert pinned["pinned_state"]["assistant_identity"]["name"] == "Jarvis"
+    assert pinned["pinned_state"]["active_workflow"]["status"] == "completed"
+
+    record_debug_event(thread_id, "test_event", {"ok": True})
+    trace = json.loads(execute_context_tool("get_debug_trace", json.dumps({"limit": 5}), thread_id))
+    assert trace["events"]
+    assert trace["events"][-1]["event"] == "test_event"
+
+
+def test_thread_policy_disables_upstream_threads_when_poisoned():
+    service = context_ingest_service()
+    thread_id = "thread-poisoned"
+    service.ingest_turn(thread_id, [{"role": "user", "content": "hello"}], response_text="hi")
+    from app.services.context_store import context_store
+
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    assert snapshot is not None
+    snapshot.thread_control.upstream_threads_disabled_until = datetime.now(UTC) + timedelta(minutes=5)
+    context_store().set_hot_snapshot(snapshot)
+
+    assert policy_allows_upstream_thread(
+        thread_id=thread_id,
+        policy=ThreadPolicy(use_upstream_threads=True, reuse_upstream_thread=True, strict_wrapper_state=False, client_name="generic"),
+    ) is False
+
+
+def test_reset_upstream_thread_state_increments_rotation_count():
+    service = context_ingest_service()
+    thread_id = "thread-rotate"
+    service.ingest_turn(thread_id, [{"role": "user", "content": "hello"}], response_text="hi")
+    from app.services.context_store import context_store
+
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    assert snapshot is not None
+    snapshot.thread_control.upstream_thread_id = "thread_old"
+    context_store().set_hot_snapshot(snapshot)
+
+    reset_upstream_thread_state(thread_id)
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    assert snapshot is not None
+    assert snapshot.thread_control.rotation_count == 1
+    assert snapshot.thread_control.upstream_thread_id is None
 
 
 @pytest.mark.asyncio
@@ -282,6 +357,84 @@ async def test_chat_completions_includes_pinned_state_instruction(monkeypatch):
                 "model": "gpt-5.4",
                 "user": explicit_user,
                 "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_adds_fresh_thread_rehydration_instruction(monkeypatch):
+    service = context_ingest_service()
+    explicit_user = "thread-rehydrate-route"
+    conversation_key = build_conversation_key(
+        bearer_token="test-token",
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Please continue"}],
+        explicit_user=explicit_user,
+    )
+    service.ingest_turn(
+        conversation_key,
+        [{"role": "user", "content": "We were implementing the popup calculator."}],
+        response_text="Keep the popup calculator plan in mind.",
+    )
+    assert fresh_thread_rehydration_instruction(conversation_key)
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert "Fresh thread rehydration:" in payload["customInstructions"]
+        assert "popup calculator" in payload["customInstructions"].lower()
+        return {
+            "type": "done",
+            "response": "Continuing with the existing plan.",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "model": "gpt-5.4",
+                "user": explicit_user,
+                "messages": [{"role": "user", "content": "Please continue"}],
+            },
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_can_disable_upstream_threads_for_client(monkeypatch):
+    monkeypatch.setenv("TUBS_USE_UPSTREAM_THREADS", "true")
+    monkeypatch.setenv("TUBS_NO_UPSTREAM_THREAD_CLIENTS", "openclaw")
+    monkeypatch.setattr("app.api.routes.chat.get_cached_thread_id", lambda _key: "thread_123")
+
+    async def fake_send_tubs_request(payload, images, bearer_token, stream):
+        assert payload.get("thread") is None
+        return {
+            "type": "done",
+            "response": "Fresh thread only.",
+            "promptTokens": 4,
+            "responseTokens": 2,
+            "totalTokens": 6,
+        }
+
+    monkeypatch.setattr("app.api.routes.chat.async_send_tubs_request", fake_send_tubs_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer test-token",
+                "User-Agent": "OpenClaw/1.0",
+            },
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "Continue"}],
             },
         )
 

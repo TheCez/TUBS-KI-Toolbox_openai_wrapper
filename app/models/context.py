@@ -81,6 +81,39 @@ class SummarizeContextWindowArgs(BaseModel):
     top_k: int = 8
 
 
+class GetPinnedStateArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SetPinnedStateFieldArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: Literal[
+        "user_name",
+        "assistant_name",
+        "assistant_creature",
+        "assistant_vibe",
+        "assistant_emoji",
+        "bootstrap_status",
+        "bootstrap_expected_reply",
+        "workflow_kind",
+        "workflow_status",
+    ]
+    value: str
+
+
+class MarkWorkflowCompleteArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str | None = None
+
+
+class GetDebugTraceArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = 20
+
+
 class PinnedUserIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -115,6 +148,38 @@ class ActiveWorkflowState(BaseModel):
     blocked_on_user: bool = False
 
 
+class TaskState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    open_tasks: list[str] = Field(default_factory=list)
+    in_progress_tasks: list[str] = Field(default_factory=list)
+    completed_tasks: list[str] = Field(default_factory=list)
+
+
+class ThreadControlState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upstream_thread_id: str | None = None
+    rotation_count: int = 0
+    low_information_reply_count: int = 0
+    poisoned_thread_count: int = 0
+    upstream_threads_disabled_until: datetime | None = None
+    last_good_answer_at: datetime | None = None
+    last_bad_filler_at: datetime | None = None
+
+
+class CompactionArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    source_turn_range: str | None = None
+    kind: str = "bridge"
+    summary: str
+    workflow_kind: str | None = None
+    workflow_status: str | None = None
+    created_at: datetime
+
+
 class HotContextSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -123,6 +188,9 @@ class HotContextSnapshot(BaseModel):
     assistant_identity: PinnedAssistantIdentity = Field(default_factory=PinnedAssistantIdentity)
     bootstrap_state: BootstrapState = Field(default_factory=BootstrapState)
     active_workflow: ActiveWorkflowState = Field(default_factory=ActiveWorkflowState)
+    task_state: TaskState = Field(default_factory=TaskState)
+    thread_control: ThreadControlState = Field(default_factory=ThreadControlState)
+    compaction_artifacts: list[CompactionArtifact] = Field(default_factory=list)
     hidden_bridge_summary: str | None = None
     current_objective: str | None = None
     current_plan: list[str] = Field(default_factory=list)

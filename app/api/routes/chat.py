@@ -22,16 +22,22 @@ from app.services.conversation_state import (
 )
 from app.services.context_ingest import context_ingest_service
 from app.services.context_runtime import (
+    fresh_thread_rehydration_instruction,
     _is_low_information_final_text,
     augment_openai_messages_with_context,
+    note_good_answer,
+    note_low_information_reply,
     pinned_state_instruction,
     resolve_openai_context_tools,
     _overflow_active_for_openai_messages,
 )
+from app.services.context_store import context_store
+from app.services.debug_trace import record_debug_event
 from app.services.openai_bridge import build_tubs_payload_from_messages, parse_assistant_response
 from app.services.prompt import has_tool_xml_start, is_tool_xml_complete, parse_tool_calls_xml, truncate_at_stop
 from app.services.staged_ingestion import prepare_staged_messages
 from app.services.thread_recovery import retry_with_fresh_thread_on_limit
+from app.services.thread_policy import policy_allows_upstream_thread, resolve_thread_policy
 from app.services.tool_validation import validate_tool_calls
 from app.services.tubs_client import async_send_tubs_request
 
@@ -55,6 +61,7 @@ async def chat_completions(
         explicit_user=body.user,
     )
     context_thread_id = conversation_key
+    policy = resolve_thread_policy(endpoint="chat", headers=request.headers)
     model_str = str(body.model.value) if hasattr(body.model, "value") else str(body.model)
     low_information_retry_note = (
         "The previous assistant reply was a non-answer placeholder. "
@@ -63,8 +70,10 @@ async def chat_completions(
     )
 
     async def _build_non_stream_response(force_fresh_thread: bool, retry_note: str | None = None):
-        thread_id = None if force_fresh_thread else get_cached_thread_id(conversation_key)
+        allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
+        thread_id = None if force_fresh_thread or policy.strict_wrapper_state or not allow_upstream_threads else get_cached_thread_id(conversation_key)
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -72,7 +81,11 @@ async def chat_completions(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        working_messages = messages_for_upstream_thread(
+            staged.messages,
+            staged.thread_id,
+            use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
+        )
         effective_messages = (
             working_messages
             if staged.thread_id
@@ -81,7 +94,7 @@ async def chat_completions(
         overflow_mode = staged.applied or _overflow_active_for_openai_messages(
             messages=effective_messages,
             thread_id=staged.thread_id,
-            instructions="\n\n".join(part for part in [pinned_instruction, retry_note] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, retry_note] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -96,7 +109,7 @@ async def chat_completions(
             thread_id=staged.thread_id,
             context_thread_id=context_thread_id,
             bearer_token=token,
-            instructions="\n\n".join(part for part in [pinned_instruction, retry_note] if part) or None,
+            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction, retry_note] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             reasoning=None,
@@ -109,7 +122,11 @@ async def chat_completions(
 
     if body.stream:
         thread_id = get_cached_thread_id(conversation_key)
+        allow_upstream_threads = policy_allows_upstream_thread(thread_id=context_thread_id, policy=policy)
+        if policy.strict_wrapper_state or not allow_upstream_threads:
+            thread_id = None
         pinned_instruction = pinned_state_instruction(context_thread_id)
+        rehydration_instruction = None if thread_id else fresh_thread_rehydration_instruction(context_thread_id)
         staged = await prepare_staged_messages(
             model=body.model,
             messages=body.messages,
@@ -117,7 +134,11 @@ async def chat_completions(
             conversation_key=conversation_key,
             bearer_token=token,
         )
-        working_messages = messages_for_upstream_thread(staged.messages, staged.thread_id)
+        working_messages = messages_for_upstream_thread(
+            staged.messages,
+            staged.thread_id,
+            use_upstream_threads=allow_upstream_threads and not policy.strict_wrapper_state,
+        )
         effective_messages = (
             working_messages
             if staged.thread_id
@@ -128,7 +149,7 @@ async def chat_completions(
             model=body.model,
             messages=effective_messages,
             thread_id=thread_id,
-            instructions=pinned_instruction,
+            instructions="\n\n".join(part for part in [pinned_instruction, rehydration_instruction] if part) or None,
             response_format=body.response_format,
             tools=body.tools,
             max_output_tokens=body.max_completion_tokens or body.max_tokens,
@@ -275,6 +296,10 @@ async def chat_completions(
 
     response_text = response_or_stream.get("response", "")
     remember_thread_id(conversation_key, response_or_stream)
+    snapshot = context_store().get_hot_snapshot(context_thread_id)
+    if snapshot is not None and isinstance(response_or_stream.get("thread"), dict):
+        snapshot.thread_control.upstream_thread_id = response_or_stream["thread"].get("id")
+        context_store().set_hot_snapshot(snapshot)
     p_tokens = response_or_stream.get("promptTokens", 0)
     c_tokens = response_or_stream.get("responseTokens", 0)
     t_tokens = response_or_stream.get("totalTokens", 0)
@@ -287,6 +312,7 @@ async def chat_completions(
         tools=body.tools,
     )
     if not tool_calls and _is_low_information_final_text(response_text):
+        note_low_information_reply(context_thread_id)
         context_ingest_service().ingest_turn(context_thread_id, body.messages)
         forget_thread_id(conversation_key)
         response_or_stream = await _build_non_stream_response(True, low_information_retry_note)
@@ -302,6 +328,23 @@ async def chat_completions(
             response_text,
             tools=body.tools,
         )
+        snapshot = context_store().get_hot_snapshot(context_thread_id)
+        if snapshot is not None and isinstance(response_or_stream.get("thread"), dict):
+            snapshot.thread_control.upstream_thread_id = response_or_stream["thread"].get("id")
+            context_store().set_hot_snapshot(snapshot)
+    if not _is_low_information_final_text(response_text):
+        note_good_answer(context_thread_id)
+    record_debug_event(
+        context_thread_id,
+        "chat_non_stream_completed",
+        {
+            "client": policy.client_name,
+            "strict_wrapper_state": policy.strict_wrapper_state,
+            "used_upstream_threads": policy.use_upstream_threads,
+            "finish_reason": finish_reason,
+            "has_tool_calls": bool(tool_calls),
+        },
+    )
     context_ingest_service().ingest_turn(context_thread_id, body.messages, response_text=response_text or None)
 
     return ChatCompletionResponse(

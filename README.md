@@ -55,6 +55,10 @@ environment:
   - TUBS_MAX_PROMPT_TOKENS=9000
   - TUBS_THREAD_PROMPT_TOKENS=9000
   - TUBS_USE_UPSTREAM_THREADS=true
+  - TUBS_STRICT_WRAPPER_STATE_MODE=false
+  - TUBS_NO_UPSTREAM_THREAD_CLIENTS=
+  - TUBS_STRICT_WRAPPER_STATE_CLIENTS=
+  - TUBS_NO_UPSTREAM_THREAD_ENDPOINTS=
   - TUBS_KEEP_LAST_TURNS=8
   - TUBS_COMPACT_SUMMARY_CHARS=4000
   - TUBS_THREAD_SUMMARY_CHARS=1200
@@ -63,7 +67,11 @@ environment:
 
 - `TUBS_MAX_PROMPT_TOKENS` is the approximate prompt budget for requests that do not yet have a cached TU-BS thread.
 - `TUBS_THREAD_PROMPT_TOKENS` is the prompt budget used once the wrapper can rely on an existing TU-BS thread. In this version, it defaults to the same ceiling as `TUBS_MAX_PROMPT_TOKENS` unless you explicitly lower it.
-- `TUBS_USE_UPSTREAM_THREADS` controls whether the wrapper should actively reuse TU-BS threads for follow-up turns. It is `true` by default.
+- `TUBS_USE_UPSTREAM_THREADS` controls whether reused TU-BS threads should receive only the latest active turn instead of full-history replay. It is `true` by default.
+- `TUBS_STRICT_WRAPPER_STATE_MODE` disables TU-BS thread reuse completely and makes the wrapper-owned pinned state, hot state, and durable context the only continuity source.
+- `TUBS_NO_UPSTREAM_THREAD_CLIENTS` can disable TU-BS thread reuse for specific clients detected by user-agent, for example `openclaw,claude-code`.
+- `TUBS_STRICT_WRAPPER_STATE_CLIENTS` enables strict wrapper-state mode only for specific clients.
+- `TUBS_NO_UPSTREAM_THREAD_ENDPOINTS` disables TU-BS thread reuse for specific endpoint families such as `responses` or `anthropic`.
 - `TUBS_KEEP_LAST_TURNS` controls how many recent non-system messages are preserved before older context is compacted.
 - `TUBS_COMPACT_SUMMARY_CHARS` controls how much room is available for stateless summary replay.
 - `TUBS_THREAD_SUMMARY_CHARS` controls the compact bridge summary size when a TU-BS thread already exists.
@@ -92,6 +100,11 @@ When `TUBS_USE_UPSTREAM_THREADS=true` and a cached TU-BS thread already exists:
 When `TUBS_USE_UPSTREAM_THREADS=false`:
 - the wrapper keeps the previous full-history replay behavior and uses prompt compaction to stay within budget
 
+When strict wrapper-state mode or a client-specific no-thread policy is active:
+- the wrapper does not reuse TU-BS threads for that request family
+- pinned state, working state, and durable retrieval become authoritative
+- fresh-thread rehydration is injected directly into `customInstructions`
+
 Useful related knobs:
 
 ```yaml
@@ -115,6 +128,11 @@ environment:
   - TUBS_CONTEXT_TOOL_LOOP_LIMIT=4
   - TUBS_REQUIRED_CONTEXT_RETRIEVALS=1
   - TUBS_CONTEXT_EMBEDDING_DIMENSIONS=64
+  - TUBS_LOW_INFORMATION_POISON_LIMIT=2
+  - TUBS_POISON_DISABLE_MINUTES=30
+  - TUBS_DEBUG_TRACE_ENABLED=false
+  - TUBS_DEBUG_TRACE_MAX_EVENTS=120
+  - TUBS_DEBUG_TRACE_PREFIX=tubs:debug:
 ```
 
 How it works:
@@ -125,10 +143,18 @@ How it works:
 - In normal requests, these tools are presented as optional retrieval helpers and the model should answer directly when the current prompt already contains enough information.
 - In overflow requests, the wrapper switches to a bounded retrieval protocol: it stores the incoming turn first, sends only compact bridge context upstream, and requires at least one wrapper context retrieval before it accepts a final answer or external tool call.
 - The wrapper now also maintains a pinned state layer for exact non-semantic thread facts such as user name, assistant identity, bootstrap status, workflow status, and a compact hidden bridge summary. This pinned state is injected on every request, including reused TU-BS thread requests, so exact state does not depend on upstream thread memory alone.
+- The pinned state now also tracks task state, thread-control state, and compaction artifacts, which lets the wrapper reason about poisoned threads, recent rotations, and completed workflows without relying on semantic retrieval.
 - `search_context` is intended as the semantic RAG-style lookup entry point. The model can then call `get_context_by_ids` for exact records or `get_thread_state` for the current working snapshot.
+- Additional exact-state tools are available when context tools are enabled:
+  - `get_pinned_state`
+  - `set_pinned_state_field`
+  - `mark_workflow_complete`
+  - `get_debug_trace`
 - The wrapper also injects targeted planner hints from tool results: repair hints for failed edits, and completion hints for successful file writes/edits so agents are more likely to explicitly close related tasks or todos.
 - Context retrieval payloads are bounded before they go back into the next model turn. Search results, exact-record fetches, and thread-state responses are truncated and capped so retrieval itself does not become the next source of prompt bloat.
 - Wrapper context-tool instructions are also kept short and only added when those tools are actually exposed, so fresh chats do not pay a context-RAG instruction penalty they cannot use.
+- If a thread starts returning low-information filler such as `Nothing else to say here`, the wrapper increments poison counters and can temporarily disable TU-BS thread reuse for that logical conversation after `TUBS_LOW_INFORMATION_POISON_LIMIT` repeats.
+- Optional debug traces can be stored in Redis so you can inspect ingestion, recovery, retrieval, and poisoning events per logical thread.
 
 Useful related knobs:
 
@@ -148,6 +174,7 @@ Important behavior notes:
 - The overflow retrieval loop is bounded by `TUBS_CONTEXT_TOOL_LOOP_LIMIT`, and the wrapper only enforces it when context actually overflowed and durable state exists. If no overflow happens, or if the thread has no retrievable durable state, the wrapper returns the answer normally without entering the loop.
 - In overflow mode, the wrapper now also rejects low-information placeholder finals such as bootstrap filler or generic closure text after retrieval. It injects one more targeted retry note instead of accepting that response as the final answer.
 - Pinned thread state is kept separate from semantic retrieval memory. Identity/bootstrap/workflow state is stored structurally and injected on every turn, while semantic retrieval stays focused on older facts, file history, failures, and decisions.
+- Fresh-thread recovery is tiered: pinned state first, then working-state bridge, then top semantic facts, then the latest live turn.
 - Streaming requests still get the lightweight Redis-backed summary, but wrapper-owned context tools are only resolved on non-streaming requests in this version.
 - TU-BS thread memory is now a secondary helper. The primary long-horizon memory layer is the wrapper-owned durable context system.
 

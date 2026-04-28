@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
-from app.models.context import HotContextSnapshot
+from app.models.context import CompactionArtifact, HotContextSnapshot
 from app.services.context_chunking import summarize_text_chunks
 from app.services.context_store import context_store
+from app.services.debug_trace import record_debug_event
 from app.services.tool_error_guidance import guidance_for_tool_errors
 from app.services.translation import extract_text_from_content, extract_tool_results_from_content
 
@@ -282,15 +284,24 @@ class ContextIngestService:
                 snapshot.active_workflow.kind = "general_chat"
             if snapshot.active_workflow.status is None:
                 snapshot.active_workflow.status = "active"
+            snapshot.task_state.in_progress_tasks = list(
+                dict.fromkeys(snapshot.task_state.in_progress_tasks + [snapshot.active_workflow.kind or "general_chat"])
+            )[-6:]
 
         if tool_failures:
             merged_failures = snapshot.latest_tool_failures + [item[:240] for item in tool_failures]
             snapshot.latest_tool_failures = list(dict.fromkeys(merged_failures))[-4:]
             snapshot.unresolved_blockers = snapshot.latest_tool_failures[:]
             snapshot.active_workflow.blocked_on_user = False
+            snapshot.active_workflow.status = "blocked_on_error"
 
         if response_text and any(token in response_text.lower() for token in ["decide", "recommend", "should", "will"]):
             snapshot.recent_decisions = list(dict.fromkeys(snapshot.recent_decisions + [response_text[:220]]))[-4:]
+        if response_text and any(token in response_text.lower() for token in ["done", "completed", "working now", "succeeded"]):
+            active_kind = snapshot.active_workflow.kind or "general_chat"
+            snapshot.task_state.completed_tasks = list(dict.fromkeys(snapshot.task_state.completed_tasks + [active_kind]))[-8:]
+            snapshot.task_state.in_progress_tasks = [item for item in snapshot.task_state.in_progress_tasks if item != active_kind]
+            snapshot.active_workflow.status = "completed"
 
         combined_texts = [text for text in [latest_user_text, response_text] if text]
         for text in combined_texts:
@@ -337,8 +348,33 @@ class ContextIngestService:
 
         snapshot.recent_messages = recent_messages[-6:]
         snapshot.hidden_bridge_summary = _build_hidden_bridge(latest_user_text, response_text, snapshot.recent_messages)
+        if snapshot.hidden_bridge_summary:
+            snapshot.compaction_artifacts.append(
+                CompactionArtifact(
+                    artifact_id=f"bridge_{uuid.uuid4().hex}",
+                    source_turn_range="latest",
+                    kind="bridge",
+                    summary=snapshot.hidden_bridge_summary,
+                    workflow_kind=snapshot.active_workflow.kind,
+                    workflow_status=snapshot.active_workflow.status,
+                    created_at=now,
+                )
+            )
+            snapshot.compaction_artifacts = snapshot.compaction_artifacts[-5:]
         snapshot.updated_at = now
         self._store.set_hot_snapshot(snapshot)
+        record_debug_event(
+            thread_id,
+            "context_ingested",
+            {
+                "objective": snapshot.current_objective,
+                "workflow_kind": snapshot.active_workflow.kind,
+                "workflow_status": snapshot.active_workflow.status,
+                "bootstrap_status": snapshot.bootstrap_state.status,
+                "user_name": snapshot.user_identity.name,
+                "assistant_name": snapshot.assistant_identity.name,
+            },
+        )
 
 
 def context_ingest_service() -> ContextIngestService:

@@ -5,6 +5,7 @@ from typing import Awaitable, Callable, TypeVar
 from fastapi import HTTPException
 
 from app.services.conversation_state import forget_thread_id
+from app.services.context_store import context_store
 from app.services.staged_ingestion_store import forget_ingestion_progress
 
 
@@ -35,6 +36,11 @@ def is_thread_exhaustion_error(exc: HTTPException) -> bool:
 def reset_upstream_thread_state(conversation_key: str) -> None:
     forget_thread_id(conversation_key)
     forget_ingestion_progress(conversation_key)
+    snapshot = context_store().get_hot_snapshot(conversation_key)
+    if snapshot is not None:
+        snapshot.thread_control.rotation_count += 1
+        snapshot.thread_control.upstream_thread_id = None
+        context_store().set_hot_snapshot(snapshot)
 
 
 async def retry_with_fresh_thread_on_limit(

@@ -237,9 +237,15 @@ def forget_thread_id(conversation_key: str) -> None:
         pass
 
 
-def messages_for_upstream_thread(messages: Sequence[Any], thread_id: str | None) -> list[Any]:
-    if not upstream_threads_enabled() or not thread_id:
-        if not upstream_threads_enabled():
+def messages_for_upstream_thread(
+    messages: Sequence[Any],
+    thread_id: str | None,
+    *,
+    use_upstream_threads: bool | None = None,
+) -> list[Any]:
+    thread_mode = upstream_threads_enabled() if use_upstream_threads is None else use_upstream_threads
+    if not thread_mode or not thread_id:
+        if not thread_mode:
             return list(messages)
 
     preserved = [message for message in messages if _message_role(message) in {"system", "developer"}]

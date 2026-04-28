@@ -5,12 +5,17 @@ import os
 from typing import Any, Iterable
 
 from app.models.context import (
+    GetDebugTraceArgs,
     GetContextByIdsArgs,
+    GetPinnedStateArgs,
     GetThreadStateArgs,
+    MarkWorkflowCompleteArgs,
     SearchContextArgs,
+    SetPinnedStateFieldArgs,
     StoreContextNoteArgs,
     SummarizeContextWindowArgs,
 )
+from app.services.debug_trace import get_debug_trace
 from app.services.context_store import context_store
 
 
@@ -25,6 +30,10 @@ def _tool_names() -> set[str]:
         "get_thread_state",
         "store_context_note",
         "summarize_context_window",
+        "get_pinned_state",
+        "set_pinned_state_field",
+        "mark_workflow_complete",
+        "get_debug_trace",
     }
 
 
@@ -125,11 +134,56 @@ def context_tools_for_openai() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "get_pinned_state",
+                "description": "Fetch exact pinned thread state such as identities, bootstrap state, workflow state, and compaction bridge state.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "set_pinned_state_field",
+                "description": "Update an exact pinned state field when a value must be stored precisely instead of semantically.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string"},
+                        "value": {"type": "string"},
+                    },
+                    "required": ["field", "value"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "mark_workflow_complete",
+                "description": "Mark the active workflow as completed and optionally append a completion summary.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "summarize_context_window",
                 "description": "Summarize the most recent durable context records in the active thread.",
                 "parameters": {
                     "type": "object",
                     "properties": {"top_k": {"type": "integer"}},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_debug_trace",
+                "description": "Fetch recent wrapper debug events for this thread to diagnose context, retrieval, and rotation behavior.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer"}},
                 },
             },
         },
@@ -254,6 +308,62 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
             payload[key] = [_truncate(item, _summary_chars()) for item in payload.get(key, [])[:4]]
         return json.dumps({"thread_id": thread_id, "state": payload}, ensure_ascii=False)
 
+    if name == "get_pinned_state":
+        GetPinnedStateArgs.model_validate_json(arguments_json or "{}")
+        snapshot = store.get_hot_snapshot(thread_id)
+        if snapshot is None:
+            return json.dumps({"thread_id": thread_id, "pinned_state": None}, ensure_ascii=False)
+        payload = {
+            "user_identity": snapshot.user_identity.model_dump(mode="json"),
+            "assistant_identity": snapshot.assistant_identity.model_dump(mode="json"),
+            "bootstrap_state": snapshot.bootstrap_state.model_dump(mode="json"),
+            "active_workflow": snapshot.active_workflow.model_dump(mode="json"),
+            "task_state": snapshot.task_state.model_dump(mode="json"),
+            "thread_control": snapshot.thread_control.model_dump(mode="json"),
+            "hidden_bridge_summary": _truncate(snapshot.hidden_bridge_summary or "", _record_content_chars()) if snapshot.hidden_bridge_summary else None,
+        }
+        return json.dumps({"thread_id": thread_id, "pinned_state": payload}, ensure_ascii=False)
+
+    if name == "set_pinned_state_field":
+        args = SetPinnedStateFieldArgs.model_validate_json(arguments_json)
+        snapshot = store.get_hot_snapshot(thread_id)
+        if snapshot is None:
+            return json.dumps({"updated": False, "reason": "missing thread state"}, ensure_ascii=False)
+        if args.field == "user_name":
+            snapshot.user_identity.name = args.value
+        elif args.field == "assistant_name":
+            snapshot.assistant_identity.name = args.value
+        elif args.field == "assistant_creature":
+            snapshot.assistant_identity.creature = args.value
+        elif args.field == "assistant_vibe":
+            snapshot.assistant_identity.vibe = args.value
+        elif args.field == "assistant_emoji":
+            snapshot.assistant_identity.emoji = args.value
+        elif args.field == "bootstrap_status":
+            snapshot.bootstrap_state.status = args.value  # type: ignore[assignment]
+        elif args.field == "bootstrap_expected_reply":
+            snapshot.bootstrap_state.last_exact_expected_reply = args.value
+        elif args.field == "workflow_kind":
+            snapshot.active_workflow.kind = args.value
+        elif args.field == "workflow_status":
+            snapshot.active_workflow.status = args.value
+        store.set_hot_snapshot(snapshot)
+        return json.dumps({"updated": True, "field": args.field}, ensure_ascii=False)
+
+    if name == "mark_workflow_complete":
+        args = MarkWorkflowCompleteArgs.model_validate_json(arguments_json or "{}")
+        snapshot = store.get_hot_snapshot(thread_id)
+        if snapshot is None:
+            return json.dumps({"updated": False, "reason": "missing thread state"}, ensure_ascii=False)
+        if snapshot.active_workflow.kind:
+            snapshot.task_state.completed_tasks = list(dict.fromkeys(snapshot.task_state.completed_tasks + [snapshot.active_workflow.kind]))[-8:]
+        snapshot.active_workflow.status = "completed"
+        snapshot.active_workflow.blocked_on_user = False
+        if args.summary:
+            snapshot.recent_decisions = list(dict.fromkeys(snapshot.recent_decisions + [_truncate(args.summary, _summary_chars())]))[-4:]
+        store.set_hot_snapshot(snapshot)
+        return json.dumps({"updated": True, "workflow_status": "completed"}, ensure_ascii=False)
+
     if name == "store_context_note":
         args = StoreContextNoteArgs.model_validate_json(arguments_json)
         record = store.new_memory(
@@ -288,6 +398,11 @@ def execute_context_tool(name: str, arguments_json: str, thread_id: str) -> str:
             },
             ensure_ascii=False,
         )
+
+    if name == "get_debug_trace":
+        args = GetDebugTraceArgs.model_validate_json(arguments_json or "{}")
+        events = get_debug_trace(thread_id)[-max(1, args.limit) :]
+        return json.dumps({"thread_id": thread_id, "events": events}, ensure_ascii=False)
 
     raise ValueError(f"Unknown context tool: {name}")
 

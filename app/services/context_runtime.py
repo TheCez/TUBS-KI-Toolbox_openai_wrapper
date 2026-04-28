@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable, Sequence
 
 from app.models.anthropic import Message as AnthropicMessage
@@ -29,6 +30,7 @@ from app.services.tool_validation import validate_tool_calls
 from app.models.tubs import TubsChatRequest
 from app.services.model_map import resolve_model
 from app.services.translation import compile_messages_to_prompt
+from app.services.debug_trace import record_debug_event
 
 
 SendRequest = Callable[[dict[str, Any], list[tuple[str, bytes, str]], str, bool], Awaitable[dict[str, Any]]]
@@ -40,6 +42,14 @@ def _context_loop_limit() -> int:
 
 def _required_context_retrievals() -> int:
     return max(1, int(os.getenv("TUBS_REQUIRED_CONTEXT_RETRIEVALS", "1")))
+
+
+def _poison_limit() -> int:
+    return max(1, int(os.getenv("TUBS_LOW_INFORMATION_POISON_LIMIT", "2")))
+
+
+def _poison_disable_minutes() -> int:
+    return max(1, int(os.getenv("TUBS_POISON_DISABLE_MINUTES", "30")))
 
 
 def _overflow_loop_message() -> str:
@@ -87,6 +97,19 @@ def _tool_name_from_definition(tool: Any, *, anthropic: bool) -> str | None:
     function = tool.get("function", {})
     name = function.get("name")
     return name if isinstance(name, str) else None
+
+
+def _recent_semantic_facts(thread_id: str, limit: int = 3) -> list[str]:
+    store = context_store()
+    items = store.recent(thread_id, limit * 3)
+    lines: list[str] = []
+    for record in items:
+        if record.kind in {"assistant_response", "context_note"}:
+            continue
+        lines.append(f"{record.kind}: {record.summary}")
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 def _restrict_overflow_tools(tools: Sequence[Any], *, anthropic: bool) -> list[Any]:
@@ -232,6 +255,59 @@ def pinned_state_instruction(thread_id: str) -> str | None:
     if not lines:
         return None
     return "Pinned thread state:\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def fresh_thread_rehydration_instruction(thread_id: str) -> str | None:
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    if snapshot is None:
+        return None
+    lines: list[str] = []
+    if snapshot.hidden_bridge_summary:
+        lines.append(f"Bridge summary: {snapshot.hidden_bridge_summary}")
+    if snapshot.current_objective:
+        lines.append(f"Objective: {snapshot.current_objective}")
+    if snapshot.current_plan:
+        lines.append("Plan: " + " | ".join(snapshot.current_plan[:4]))
+    semantic = _recent_semantic_facts(thread_id, limit=3)
+    if semantic:
+        lines.append("Relevant prior facts:")
+        lines.extend(f"  - {item}" for item in semantic)
+    if not lines:
+        return None
+    return "Fresh thread rehydration:\n" + "\n".join(lines)
+
+
+def note_low_information_reply(thread_id: str) -> None:
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    if snapshot is None:
+        return
+    snapshot.thread_control.low_information_reply_count += 1
+    snapshot.thread_control.last_bad_filler_at = datetime.now(UTC)
+    if snapshot.thread_control.low_information_reply_count >= _poison_limit():
+        snapshot.thread_control.poisoned_thread_count += 1
+        snapshot.thread_control.upstream_threads_disabled_until = datetime.now(UTC) + timedelta(minutes=_poison_disable_minutes())
+    context_store().set_hot_snapshot(snapshot)
+    record_debug_event(
+        thread_id,
+        "low_information_reply",
+        {
+            "count": snapshot.thread_control.low_information_reply_count,
+            "poisoned": snapshot.thread_control.poisoned_thread_count,
+            "disabled_until": snapshot.thread_control.upstream_threads_disabled_until.isoformat()
+            if snapshot.thread_control.upstream_threads_disabled_until
+            else None,
+        },
+    )
+
+
+def note_good_answer(thread_id: str) -> None:
+    snapshot = context_store().get_hot_snapshot(thread_id)
+    if snapshot is None:
+        return
+    snapshot.thread_control.last_good_answer_at = datetime.now(UTC)
+    snapshot.thread_control.low_information_reply_count = 0
+    context_store().set_hot_snapshot(snapshot)
+    record_debug_event(thread_id, "good_answer", {})
 
 
 def augment_openai_messages_with_context(messages: Sequence[Message], thread_id: str) -> list[Message]:
