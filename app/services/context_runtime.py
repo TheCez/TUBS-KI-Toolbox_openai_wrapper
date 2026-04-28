@@ -50,6 +50,58 @@ def _overflow_loop_message() -> str:
     )
 
 
+def _overflow_retry_message() -> str:
+    return (
+        "Wrapper note: the previous reply did not answer the user's active request yet. "
+        "Use the retrieved wrapper context and now produce a concrete answer or the next required external tool call. "
+        "Do not reply with a placeholder, bootstrap line, or generic closure."
+    )
+
+
+def _is_low_information_final_text(text: str) -> bool:
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return True
+    low_information_phrases = {
+        "nothing else to say here",
+        "nothing more to say here",
+        "nothing else to add",
+        "nothing more to add",
+        "i already know the answer",
+        "bootstrap complete",
+        "bootstrap pending",
+    }
+    if normalized in low_information_phrases:
+        return True
+    if len(normalized) <= 32 and normalized.startswith("nothing"):
+        return True
+    return False
+
+
+def _tool_name_from_definition(tool: Any, *, anthropic: bool) -> str | None:
+    if not isinstance(tool, dict):
+        return None
+    if anthropic:
+        name = tool.get("name")
+        return name if isinstance(name, str) else None
+    function = tool.get("function", {})
+    name = function.get("name")
+    return name if isinstance(name, str) else None
+
+
+def _restrict_overflow_tools(tools: Sequence[Any], *, anthropic: bool) -> list[Any]:
+    allowed = {"search_context", "get_context_by_ids", "get_thread_state"}
+    restricted: list[Any] = []
+    for tool in tools:
+        name = _tool_name_from_definition(tool, anthropic=anthropic)
+        if name in {"store_context_note", "summarize_context_window"}:
+            continue
+        if name and is_context_tool(name) and name not in allowed:
+            continue
+        restricted.append(tool)
+    return restricted
+
+
 @dataclass
 class LocalContextResolution:
     thread_id: str | None
@@ -172,7 +224,6 @@ async def resolve_openai_context_tools(
     require_context_retrieval: bool = False,
 ) -> LocalContextResolution:
     enable_context_tools = should_offer_context_tools(context_thread_id)
-    effective_tools = merge_tools(tools, anthropic=False) if enable_context_tools else list(tools or [])
     working_messages = list(messages)
     current_thread_id = thread_id
     used_context_tools = False
@@ -183,6 +234,10 @@ async def resolve_openai_context_tools(
     last_tool_calls: list[ToolCall] | None = None
     last_finish_reason = "stop"
     overflow_mode = require_context_retrieval and enable_context_tools
+    runtime_instruction_note: str | None = None
+    effective_tools = merge_tools(tools, anthropic=False) if enable_context_tools else list(tools or [])
+    if overflow_mode:
+        effective_tools = _restrict_overflow_tools(effective_tools, anthropic=False)
 
     for _ in range(_context_loop_limit()):
         payload, images, _model_str = build_tubs_payload_from_messages(
@@ -193,6 +248,7 @@ async def resolve_openai_context_tools(
                 part
                 for part in [
                     instructions,
+                    runtime_instruction_note,
                     context_tool_instruction(overflow_mode=overflow_mode) if enable_context_tools else "",
                 ]
                 if part
@@ -248,6 +304,16 @@ async def resolve_openai_context_tools(
             )
             continue
 
+        if overflow_mode and not (external_calls or tool_calls) and _is_low_information_final_text(final_text):
+            runtime_instruction_note = _overflow_retry_message()
+            working_messages.append(
+                Message(
+                    role="developer",
+                    content=_overflow_retry_message(),
+                )
+            )
+            continue
+
         return LocalContextResolution(
             thread_id=current_thread_id,
             effective_tools=effective_tools,
@@ -287,7 +353,6 @@ async def resolve_anthropic_context_tools(
     require_context_retrieval: bool = False,
 ) -> LocalContextResolution:
     enable_context_tools = should_offer_context_tools(context_thread_id)
-    effective_tools = merge_tools(tools, anthropic=True) if enable_context_tools else list(tools or [])
     working_messages = list(messages)
     current_thread_id = thread_id
     used_context_tools = False
@@ -298,6 +363,10 @@ async def resolve_anthropic_context_tools(
     last_tool_calls: list[ToolCall] | None = None
     last_finish_reason = "stop"
     overflow_mode = require_context_retrieval and enable_context_tools
+    runtime_instruction_note: str | None = None
+    effective_tools = merge_tools(tools, anthropic=True) if enable_context_tools else list(tools or [])
+    if overflow_mode:
+        effective_tools = _restrict_overflow_tools(effective_tools, anthropic=True)
 
     for _ in range(_context_loop_limit()):
         prompt = compile_anthropic_messages_to_prompt(working_messages)
@@ -307,6 +376,7 @@ async def resolve_anthropic_context_tools(
                 part
                 for part in [
                     system_instructions,
+                    runtime_instruction_note,
                     context_tool_instruction(overflow_mode=overflow_mode) if enable_context_tools else "",
                 ]
                 if part
@@ -385,6 +455,16 @@ async def resolve_anthropic_context_tools(
                 AnthropicMessage(
                     role="user",
                     content=_overflow_loop_message(),
+                )
+            )
+            continue
+
+        if overflow_mode and not (external_calls or tool_calls) and _is_low_information_final_text(final_text):
+            runtime_instruction_note = _overflow_retry_message()
+            working_messages.append(
+                AnthropicMessage(
+                    role="user",
+                    content=_overflow_retry_message(),
                 )
             )
             continue

@@ -145,6 +145,7 @@ Important behavior notes:
 - Non-overflow requests are still ingested after the turn completes, so retrieval stays focused on prior context instead of echoing the active prompt back to the model.
 - Overflow requests ingest the current turn before the first upstream TU-BS call so the model can retrieve it back through wrapper tools if compaction or thread slicing would otherwise hide important detail.
 - The overflow retrieval loop is bounded by `TUBS_CONTEXT_TOOL_LOOP_LIMIT`, and the wrapper only enforces it when context actually overflowed and durable state exists. If no overflow happens, or if the thread has no retrievable durable state, the wrapper returns the answer normally without entering the loop.
+- In overflow mode, the wrapper now also rejects low-information placeholder finals such as bootstrap filler or generic closure text after retrieval. It injects one more targeted retry note instead of accepting that response as the final answer.
 - Streaming requests still get the lightweight Redis-backed summary, but wrapper-owned context tools are only resolved on non-streaming requests in this version.
 - TU-BS thread memory is now a secondary helper. The primary long-horizon memory layer is the wrapper-owned durable context system.
 
